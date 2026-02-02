@@ -1,0 +1,11 @@
+^.*\.Rproj$
+^\.Rproj\.user$
+^\.DS_Store$
+^\.git$
+^\.gitignore$
+^README\.md$
+^LICENSE\.md$
+^doc$
+^Meta$
+^data-raw$
+^\.github$

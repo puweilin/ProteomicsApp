@@ -1,0 +1,60 @@
+Package: ProteomicsApp
+Title: Proteomics Data Analysis Platform
+Version: 1.0.0
+Authors@R:
+    person("Your", "Name", email = "your.email@example.com", role = c("aut", "cre"))
+Description: A comprehensive Shiny application for proteomics data analysis,
+    including data preprocessing, quality control, differential expression analysis,
+    and pathway enrichment analysis.
+License: MIT + file LICENSE
+Encoding: UTF-8
+Roxygen: list(markdown = TRUE)
+RoxygenNote: 7.3.3
+Depends:
+    R (>= 4.0.0)
+Imports:
+    shiny,
+    shinydashboard,
+    shinyWidgets,
+    shinyjs,
+    shinybusy,
+    shinythemes,
+    tidyverse,
+    dplyr,
+    tidyr,
+    readxl,
+    openxlsx,
+    DT,
+    here,
+    ggplot2,
+    ggrepel,
+    patchwork,
+    R6,
+    broom,
+    missForest,
+    doParallel,
+    glmnet,
+    caret,
+    splines,
+    pheatmap,
+    viridis,
+    digest,
+    jsonlite,
+    ggplotify,
+    grid,
+    DEP,
+    SummarizedExperiment,
+    limma,
+    clusterProfiler,
+    enrichplot,
+    org.Hs.eg.db,
+    ReactomePA,
+    Mfuzz,
+    ComplexHeatmap,
+    GSVA,
+    GSEABase
+Suggests:
+    testthat (>= 3.0.0),
+    knitr,
+    rmarkdown
+biocViews: Proteomics, DifferentialExpression, Visualization
