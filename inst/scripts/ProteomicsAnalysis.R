@@ -222,40 +222,23 @@ perform_imputation = function(method = c("missForest","bpca", "knn", "QRILC", "M
       library(vegan)
       library(patchwork)
 
-      # [新增] 修复维度不匹配问题: 如果删除了outlier，使用backup数据
-      raw_mat <- assay(self$se_obj)
-      imp_mat <- assay(self$imputed_se)
+      # 获取数据矩阵
+      raw_mat_full <- assay(self$se_obj)
+      imp_mat_full <- assay(self$imputed_se)
 
-      # 检查维度是否匹配
-      if (ncol(raw_mat) != ncol(imp_mat)) {
-        warning(paste0("Sample numbers differ (raw: ", ncol(raw_mat), ", imputed: ", ncol(imp_mat), "). Using backup data for comparison."))
+      # 获取共同的蛋白和样本
+      common_proteins <- intersect(rownames(raw_mat_full), rownames(imp_mat_full))
+      common_samples <- intersect(colnames(raw_mat_full), colnames(imp_mat_full))
 
-        if (!is.null(self$imputed_se_backup)) {
-          # 使用backup数据，但只保留当前存在的样本
-          common_samples <- intersect(colnames(self$imputed_se), colnames(self$imputed_se_backup))
-          if (length(common_samples) == 0) {
-            stop("No common samples found between current and backup data. Cannot assess imputation.")
-          }
-
-          # 从backup中提取se_obj对应的原始数据（imputation前的）
-          # 注意：se_obj是imputation前的，imputed_se_backup是imputation后的完整数据
-          # 我们需要使用imputed_se_backup来反推原始数据
-          message(paste0("  Using ", length(common_samples), " common samples for assessment."))
-          imp_mat <- assay(self$imputed_se)  # 当前的imputed数据（可能删除了outlier）
-
-          # 从backup中获取相同样本的数据进行比较
-          if (!is.null(self$imputed_se_backup) && ncol(self$imputed_se_backup) > ncol(imp_mat)) {
-            raw_mat_backup <- assay(self$imputed_se_backup)[, common_samples, drop = FALSE]
-            # 注意：这里我们实际上是在比较删除outlier前后的数据，而不是imputation前后
-            # 为了正确评估，我们应该跳过这个分析，或者只做density plot
-            message("  Note: Structure comparison is not available when outliers have been removed.")
-            message("  Showing distribution comparison only.")
-            plot_type <- "density"  # 只显示density plot
-          }
-        } else {
-          stop("Dimension mismatch and no backup available. Please re-run imputation.")
-        }
+      if (length(common_proteins) == 0 || length(common_samples) == 0) {
+        stop("No common proteins or samples found between raw and imputed data.")
       }
+
+      # 使用共同的蛋白和样本
+      raw_mat <- raw_mat_full[common_proteins, common_samples, drop = FALSE]
+      imp_mat <- imp_mat_full[common_proteins, common_samples, drop = FALSE]
+
+      message(paste0("  Using ", length(common_proteins), " proteins and ", length(common_samples), " samples for assessment."))
 
       # 2. 准备基础数据
       n_imputed <- sum(is.na(raw_mat))
@@ -350,29 +333,45 @@ perform_imputation = function(method = c("missForest","bpca", "knn", "QRILC", "M
       # 模块 B: 分布一致性 (Density Plot)
       # ==========================================================
       if ("density" %in% plot_type) {
-        plot_df_dens <- data.frame(
-          Intensity = as.vector(imp_mat),
-          Type = ifelse(as.vector(is.na(raw_mat)), "Imputed", "Observed")
-        )
-        
-        p_dist <- ggplot(plot_df_dens, aes(x = Intensity, fill = Type, color = Type)) +
-          geom_density(alpha = 0.4) +
-          scale_fill_manual(values = c("Observed" = "#1465AC", "Imputed" = "#B31B21")) +
-          scale_color_manual(values = c("Observed" = "#1465AC", "Imputed" = "#B31B21")) +
-          labs(
-            title = "Distribution Check",
-            subtitle = paste0("Total Imputed: ", prop_imputed, "%"),
-            x = "Intensity (Log2)", y = "Density"
-          ) +
-          theme_bw() + theme(plot.title = element_text(face = "bold", hjust = 0.5), legend.position = "top")
-        
+        # 检查维度是否匹配，如果不匹配则只显示 imputed 数据的分布
+        if (ncol(raw_mat) != ncol(imp_mat)) {
+          # 维度不匹配，只显示当前数据的分布
+          plot_df_dens <- data.frame(
+            Intensity = as.vector(imp_mat),
+            Type = "Current Data"
+          )
+          p_dist <- ggplot(plot_df_dens, aes(x = Intensity)) +
+            geom_density(fill = "#1465AC", color = "#1465AC", alpha = 0.4) +
+            labs(
+              title = "Distribution (After Outlier Removal)",
+              subtitle = paste0("Samples: ", ncol(imp_mat)),
+              x = "Intensity (Log2)", y = "Density"
+            ) +
+            theme_bw() + theme(plot.title = element_text(face = "bold", hjust = 0.5))
+        } else {
+          plot_df_dens <- data.frame(
+            Intensity = as.vector(imp_mat),
+            Type = ifelse(as.vector(is.na(raw_mat)), "Imputed", "Observed")
+          )
+          p_dist <- ggplot(plot_df_dens, aes(x = Intensity, fill = Type, color = Type)) +
+            geom_density(alpha = 0.4) +
+            scale_fill_manual(values = c("Observed" = "#1465AC", "Imputed" = "#B31B21")) +
+            scale_color_manual(values = c("Observed" = "#1465AC", "Imputed" = "#B31B21")) +
+            labs(
+              title = "Distribution Check",
+              subtitle = paste0("Total Imputed: ", prop_imputed, "%"),
+              x = "Intensity (Log2)", y = "Density"
+            ) +
+            theme_bw() + theme(plot.title = element_text(face = "bold", hjust = 0.5), legend.position = "top")
+        }
+
         plot_list$density <- p_dist
       }
 
       # ==========================================================
-      # 模块 C: 数据完整性检查
+      # 模块 C: 数据完整性检查 (仅当维度匹配时)
       # ==========================================================
-      if (check_integrity) {
+      if (check_integrity && ncol(raw_mat) == ncol(imp_mat)) {
         mask <- !is.na(raw_mat)
         diff_vals <- abs(raw_mat[mask] - imp_mat[mask])
         if(max(diff_vals) < 1e-9) {
@@ -400,23 +399,33 @@ perform_imputation = function(method = c("missForest","bpca", "knn", "QRILC", "M
     # --- 功能 3: 绘制 PCA 图 ---
     plot_pca = function(color_col = NULL) {
       if (is.null(self$imputed_se)) stop("Please run perform_imputation() first.")
-      
+
       pca_res <- prcomp(t(assay(self$imputed_se)), scale. = TRUE)
-      
-      pca_df <- as.data.frame(pca_res$x) %>% 
+
+      pca_df <- as.data.frame(pca_res$x) %>%
         rownames_to_column("sample") %>%
         left_join(as.data.frame(colData(self$imputed_se)) %>% rownames_to_column("sample"), by="sample")
-      
+
       color_col <- color_col
-      
+
+      # 获取分组数量以选择合适的配色
+      n_groups <- length(unique(pca_df[[color_col]]))
+
       p <- ggplot(pca_df, aes(x=PC1, y=PC2, color = .data[[color_col]], label=sample)) +
         geom_point(size=4, alpha=0.8) +
         geom_text_repel(max.overlaps = 10) +
-        labs(title = "PCA Analysis (Imputed Data)", 
+        labs(title = "PCA Analysis (Imputed Data)",
              subtitle = "Check for outliers here") +
         theme_bw() +
         theme(plot.title = element_text(face="bold", hjust=0.5))
-      
+
+      # 使用 ggsci 配色
+      if (n_groups <= 10) {
+        p <- p + ggsci::scale_color_npg()
+      } else {
+        p <- p + ggsci::scale_color_d3(palette = "category20")
+      }
+
       return(p)
     },
 
@@ -644,29 +653,39 @@ perform_imputation = function(method = c("missForest","bpca", "knn", "QRILC", "M
       
       # 初始化 ggplot
       p <- ggplot(plot_df, aes(x = .data[[variable]], y = Expression))
-      
+
+      # 获取分组数量
+      n_groups <- length(unique(plot_df[[color_var]]))
+
       # --- 逻辑分支 A: 连续变量 (Numeric) ---
       if (is.numeric(x_vals) && length(unique(x_vals)) > 2) {
         message(paste("Detected numeric variable '", variable, "'. Using Scatter plot + Loess.", sep=""))
-        
+
         p <- p +
           geom_point(aes(color = .data[[color_var]]), size = 2.5, alpha = 0.7) +
           geom_smooth(method = "loess", color = "#B31B21", fill = "#B31B21", alpha = 0.2, linewidth = 1) +
           scale_color_viridis_c(option = "D", begin = 0.2, end = 0.8) + # 默认连续配色
           theme_bw()
-          
+
       } else {
         # --- 逻辑分支 B: 分类变量 (Factor/Character) ---
         message(paste("Detected categorical variable '", variable, "'. Using Violin + Boxplot.", sep=""))
-        
+
         # 强制转换为因子以确保离散绘图
         plot_df[[variable]] <- as.factor(plot_df[[variable]])
-        
+
         p <- p +
           geom_violin(aes(fill = .data[[color_var]]), alpha = 0.5, trim = FALSE, scale = "width") +
           geom_boxplot(width = 0.15, outlier.shape = NA, fill = "white", alpha = 0.9) +
           geom_jitter(width = 0.1, size = 1.5, alpha = 0.6, color = "grey30") +
           theme_bw()
+
+        # 使用 ggsci 配色
+        if (n_groups <= 10) {
+          p <- p + ggsci::scale_fill_npg()
+        } else {
+          p <- p + ggsci::scale_fill_d3(palette = "category20")
+        }
       }
       
       # 5. 通用修饰
@@ -707,7 +726,7 @@ DiffExpAnalyst <- R6Class("DiffExpAnalyst",
     
     # 模式 A: 分组比较 (利用 DEP 流程)
     # --- 核心修改：完全模拟 DEP test_diff 的行为，但支持协变量 ---
-    run_dep_analysis = function(condition_col = "condition", control_group, case_group, covariates = NULL) {
+    run_dep_analysis = function(condition_col = "condition", control_group, case_group, covariates = NULL, paired_col = NULL) {
       
       message(paste0("--- Running DEP-style Analysis with Covariates: ", case_group, " vs ", control_group, " ---"))
       
@@ -761,8 +780,17 @@ DiffExpAnalyst <- R6Class("DiffExpAnalyst",
 
       
       message(paste("  Contrast:", contrast_formula))
-      
-      fit <- lmFit(assay(data_se), design)
+
+      if (!is.null(paired_col)) {
+        if (!paired_col %in% colnames(meta_data)) stop(paste("Paired column not found:", paired_col))
+        block_var <- as.factor(meta_data[[paired_col]])
+        message(paste("  Paired/blocked on:", paired_col))
+        corfit <- duplicateCorrelation(assay(data_se), design, block = block_var)
+        message(paste("  Consensus correlation:", round(corfit$consensus, 4)))
+        fit <- lmFit(assay(data_se), design, block = block_var, correlation = corfit$consensus)
+      } else {
+        fit <- lmFit(assay(data_se), design)
+      }
       cont.matrix <- makeContrasts(contrasts = contrast_formula, levels = design)
       fit2 <- contrasts.fit(fit, cont.matrix)
       fit2 <- eBayes(fit2)

@@ -3,9 +3,9 @@
 # ==============================================================================
 setup_environment <- function() {
   cran_packages <- c(
-    "shiny", "shinydashboard", "shinyWidgets", "shinyjs", "shinybusy", "shinythemes",
+    "shiny", "shinydashboard", "shinyWidgets", "shinyjs", "shinybusy", "shinythemes", "shinyFiles",
     "tidyverse", "readxl", "openxlsx", "DT", "here",
-    "ggplot2", "ggrepel", "patchwork", "R6", "broom",
+    "ggplot2", "ggrepel", "patchwork", "R6", "broom", "ggsci", "circlize",
     "missForest", "doParallel", "glmnet", "caret", "splines",
     "pheatmap", "viridis", "digest", "jsonlite", "shinythemes", "ggplotify"
   )
@@ -25,17 +25,18 @@ setup_environment <- function() {
 }
 setup_environment()
 
-# --- 加载核心脚本 ---
-# 在R包环境中，使用system.file找到脚本路径
-script_dir <- system.file("scripts", package = "ProteomicsApp")
-if (script_dir == "") {
-  # 如果不在包环境中，尝试使用here()
-  script_dir <- here::here("scripts")
+# --- 加载核心脚本 (包内路径) ---
+pkg_scripts_dir <- system.file("scripts", package = "ProteomicsApp")
+if (pkg_scripts_dir == "") {
+  # 开发模式: 直接从相对路径加载
+  pkg_scripts_dir <- file.path(dirname(getwd()), "scripts")
+  if (!dir.exists(pkg_scripts_dir)) {
+    pkg_scripts_dir <- here::here("scripts")
+  }
 }
-
-source(file.path(script_dir, "ProteomicsAnalysis.R"))
-source(file.path(script_dir, "ProteomicsGSVA.R"))
-source(file.path(script_dir, "run_proteomics_pipeline.R"))
+source(file.path(pkg_scripts_dir, "ProteomicsAnalysis.R"))
+source(file.path(pkg_scripts_dir, "ProteomicsGSVA.R"))
+source(file.path(pkg_scripts_dir, "run_proteomics_pipeline.R"))
 
 options(shiny.maxRequestSize = 200 * 1024^2)
 
@@ -149,16 +150,34 @@ ui <- navbarPage(
           border-bottom: 2px solid #ecf0f1;
         }
 
-        /* Tab 样式 */
+        /* Tab 样式 - 主标签 (Preprocessing, Analysis Config, Visualization) */
         .nav-tabs > li > a {
           color: #7f8c8d;
-          font-weight: 500;
+          font-weight: 600;
+          font-size: 16px;
+          padding: 12px 20px;
         }
 
         .nav-tabs > li.active > a {
           color: #2c3e50;
-          font-weight: 600;
+          font-weight: 700;
+          font-size: 16px;
           border-top: 3px solid #3498db;
+          background-color: #f8f9fa;
+        }
+
+        /* 子标签样式 (Data Overview, Imputation QC, etc.) */
+        .tab-content .nav-tabs > li > a {
+          font-size: 14px;
+          font-weight: 500;
+          padding: 10px 15px;
+        }
+
+        .tab-content .nav-tabs > li.active > a {
+          font-size: 14px;
+          font-weight: 600;
+          color: #3498db;
+          border-top: 2px solid #3498db;
         }
 
         /* 输入框样式 */
@@ -268,6 +287,49 @@ ui <- navbarPage(
         .table-striped tbody tr:nth-of-type(odd) {
           background-color: #f8f9fa;
         }
+
+        /* pickerInput 样式修复 - 确保文字可见 */
+        .bootstrap-select .dropdown-toggle {
+          background-color: #fff !important;
+          color: #2c3e50 !important;
+          border: 1px solid #dfe6e9;
+        }
+
+        .bootstrap-select .dropdown-toggle .filter-option-inner-inner {
+          color: #2c3e50 !important;
+        }
+
+        .bootstrap-select .dropdown-menu li a {
+          color: #2c3e50 !important;
+        }
+
+        .bootstrap-select .dropdown-menu li.selected a {
+          background-color: #3498db !important;
+          color: #fff !important;
+        }
+
+        .bootstrap-select .dropdown-menu li a:hover {
+          background-color: #ecf0f1 !important;
+          color: #2c3e50 !important;
+        }
+
+        .bootstrap-select .dropdown-menu li.active a,
+        .bootstrap-select .dropdown-menu li.active a:hover {
+          background-color: #d6eaf8 !important;
+          color: #2c3e50 !important;
+        }
+
+        .bootstrap-select .dropdown-menu .text mark,
+        .bootstrap-select .dropdown-menu .text .text-muted {
+          background-color: #f9e79f !important;
+          color: #2c3e50 !important;
+          padding: 0 2px;
+        }
+
+        .bootstrap-select .bs-searchbox input {
+          color: #2c3e50 !important;
+          background-color: #fff !important;
+        }
       "))
     )
   ),
@@ -277,7 +339,12 @@ ui <- navbarPage(
            sidebarLayout(
              sidebarPanel(width = 3,
                           h4(icon("upload"), "Data Import"),
-                          fileInput("upload_file", "Upload Excel (.xlsx)", accept = c(".xlsx")),
+                          shinyFilesButton("upload_file", "Select Excel File",
+                                          title = "Please select an Excel file (.xlsx)",
+                                          multiple = FALSE,
+                                          buttonType = "primary",
+                                          class = "btn-block"),
+                          verbatimTextOutput("selected_file_path", placeholder = TRUE),
                           helpText("Sheet1: Matrix; Sheet2: Metadata; Sheet3: Annot"),
 
                           # [修改] 添加metadata列选择和值选择
@@ -310,7 +377,13 @@ ui <- navbarPage(
                           helpText("Step 1: Auto-detect or manually select samples."),
                           actionButton("btn_detect_outlier", "Auto-Detect (PCA)", width = "100%"),
                           br(), br(),
-                          uiOutput("ui_outlier_picker"),
+                          pickerInput("sel_outliers", "Select Samples to Remove:",
+                                      choices = NULL,
+                                      selected = NULL,
+                                      multiple = TRUE,
+                                      options = list(`actions-box` = TRUE, `live-search` = TRUE,
+                                                     `selected-text-format` = "count > 3",
+                                                     `none-selected-text` = "No samples loaded yet")),
                           br(),
                           helpText("Step 2: Click Confirm to apply changes."),
                           actionButton("btn_confirm_remove", "Confirm Update", class = "btn-danger", width = "100%"),
@@ -321,7 +394,16 @@ ui <- navbarPage(
                        tabsetPanel(id = "subtab_wizard",
                                    tabPanel("Data Overview", icon = icon("table"), br(), verbatimTextOutput("data_summary"), hr(), h4("Initial Missing Values Pattern"), plotOutput("missing_pattern_plot", height = "500px")),
                                    tabPanel("Imputation QC", icon = icon("check-double"), br(), h4("Imputation Quality Assessment"), plotOutput("qc_imp_assess", height = "600px")),
-                                   tabPanel("PCA (Outlier Check)", icon = icon("crosshairs"), br(), h4("PCA Overview"), plotOutput("qc_pca_plot", height = "600px")),
+                                   tabPanel("PCA (Outlier Check)", icon = icon("crosshairs"), br(),
+                                           h4("PCA Overview"),
+                                           fluidRow(
+                                             column(6, plotOutput("qc_pca_plot", height = "450px")),
+                                             column(6, plotOutput("qc_pca_outlier_plot", height = "450px"))
+                                           ),
+                                           hr(),
+                                           h4("Sample Correlation (Outlier Detection)"),
+                                           plotOutput("qc_cor_outlier_plot", height = "400px")
+                                  ),
                                    tabPanel("Clean Matrix", icon = icon("th"), br(),
                                            fluidRow(
                                              column(12,
@@ -352,7 +434,7 @@ ui <- navbarPage(
                           h4("Thresholds & Params"),
                           numericInput("param_pval", "P-val Cutoff:", 0.05, step = 0.01),
                           conditionalPanel("input.analysis_mode == 'group'",
-                            numericInput("param_logfc", "LogFC Cutoff:", 0.58, step = 0.1)
+                            numericInput("param_logfc", "LogFC Cutoff:", 0.263, step = 0.1)
                           ),
                           conditionalPanel("input.analysis_mode == 'continuous'",
                             numericInput("param_corr", "Correlation Cutoff (Rho):", 0.5, step = 0.1, min = 0, max = 1),
@@ -382,22 +464,27 @@ ui <- navbarPage(
            sidebarLayout(
              sidebarPanel(width = 3,
                           h4("Visual Controls"),
-                          htmlOutput("txt_current_params"), 
+                          htmlOutput("txt_current_params"),
                           hr(),
                           uiOutput("vis_slider_fc"),
-                          sliderInput("vis_slider_pval", "P-val Cutoff (View):", min=0, max=0.2, value=0.05, step=0.001),
-                          hr(),
-                          h5("Deep Dive Protein:"),
-                          uiOutput("vis_selector_protein"),
-                          hr(),
-                          downloadButton("download_plots", "Download Report", class = "btn-info")
+                          fluidRow(
+                            column(8, sliderInput("vis_slider_pval", "P-val Cutoff (View):", min=0, max=0.2, value=0.05, step=0.001)),
+                            column(4, numericInput("vis_input_pval", "Value:", value=0.05, min=0, max=1, step=0.001))
+                          ),
+                          hr()
              ),
              mainPanel(width = 9,
                        tabsetPanel(
                          tabPanel("Volcano & Table", br(), fluidRow(column(7, plotOutput("vis_volcano", brush = "volcano_brush", height = "500px")), column(5, h5("Selected Points:"), tableOutput("vis_volcano_info"))), hr(), DTOutput("vis_dep_table")),
                          tabPanel("Heatmap", br(), fluidRow(column(4, numericInput("heatmap_n", "Top N Proteins:", 50, min = 10, max = 2000)), column(4, checkboxInput("heat_cluster_row", "Cluster Rows", TRUE)), column(4, checkboxInput("heat_cluster_col", "Cluster Cols", TRUE))), plotOutput("vis_heatmap", height = "700px")),
                          tabPanel("PCA", plotOutput("vis_pca", height = "600px")),
-                         tabPanel("Deep Dive", plotOutput("vis_single_prot", height = "500px")),
+                         tabPanel("Deep Dive", br(),
+                                  fluidRow(
+                                    column(6, uiOutput("vis_selector_protein")),
+                                    column(6, helpText("Select up to 9 proteins to display simultaneously"))
+                                  ),
+                                  plotOutput("vis_single_prot", height = "700px")
+                         ),
                          tabPanel("Enrichment (ORA)", br(), fluidRow(column(6, selectInput("vis_ora_db", "Database:", choices = c("GO_BP", "GO_MF", "GO_CC", "KEGG", "Reactome", "Wiki"))), column(6, radioButtons("vis_ora_dir", "Direction:", choices = c("UP", "DOWN"), inline = TRUE))), plotOutput("vis_ora_plot", height = "600px"), DTOutput("vis_ora_table")),
                          tabPanel("Enrichment (GSEA)", br(), fluidRow(column(4, selectInput("vis_gsea_db", "Database:", choices = c("GO_BP", "GO_MF", "GO_CC", "KEGG", "Reactome"))), column(8, uiOutput("ui_vis_gsea_pathway"))), plotOutput("vis_gsea_dotplot", height = "500px"), hr(), plotOutput("vis_gsea_curve", height = "400px")),
                          tabPanel("GSVA Analysis", br(), fluidRow(column(4, selectInput("vis_gsva_db", "Database:", choices = c("GOBP", "GOMF", "GOCC", "KEGG", "Wiki", "Reactome"))), column(4, selectInput("vis_gsva_plot_type", "Plot Type:", choices = c("Volcano", "Heatmap", "Barplot")))), plotOutput("vis_gsva_plot", height = "700px"))
@@ -415,8 +502,9 @@ server <- function(input, output, session) {
   rv <- reactiveValues(
     raw_mat = NULL, meta = NULL, annot = NULL,
     manager = NULL, diff_tool = NULL, enrich_tool = NULL, gsva_tool = NULL,
-    logs = character(0), 
-    cache_root = NULL,     
+    logs = character(0),
+    cache_root = NULL,
+    selected_file_path = NULL,  # 存储用户选择的文件真实路径
     loaded_params = NULL 
   )
   
@@ -424,6 +512,32 @@ server <- function(input, output, session) {
     rv$logs <- c(paste0(format(Sys.time(), "[%H:%M:%S] "), msg), rv$logs)
   }
   output$analysis_log <- renderText({ paste(rv$logs, collapse = "\n") })
+
+  # --- shinyFiles: 文件选择器初始化 ---
+  # 使用普通环境变量存储上次目录 (shinyFileChoose 的 roots 回调不在 reactive 上下文中)
+  file_mem <- environment()
+  file_mem$last_dir <- NULL
+
+  get_volumes <- function() {
+    base_vols <- c(Home = path.expand("~"), getVolumes()())
+    ld <- file_mem$last_dir
+    if (!is.null(ld) && dir.exists(ld) && ld != path.expand("~")) {
+      c("Last Used" = ld, base_vols)
+    } else {
+      base_vols
+    }
+  }
+
+  shinyFileChoose(input, "upload_file", roots = get_volumes, filetypes = c("xlsx"))
+
+  # 显示选中的文件路径
+  output$selected_file_path <- renderText({
+    if (is.null(rv$selected_file_path)) {
+      "No file selected"
+    } else {
+      basename(rv$selected_file_path)
+    }
+  })
 
   # [新增] 生成Clean Matrix的辅助函数
   generate_clean_matrix <- function(manager) {
@@ -455,10 +569,31 @@ server <- function(input, output, session) {
         add_log("Warning: Missing mask not available, imputed values will not be highlighted.")
       }
 
-      # 获取Protein ID和Gene Name
-      protein_ids <- rownames(imp_mat)
+      # [修复] 获取正确的 Protein ID 和 Gene Name
+      # rowData(manager$imputed_se)$ID 是 Protein ID
+      # rowData(manager$imputed_se)$name 是 Gene Name
+      protein_ids <- rowData(manager$imputed_se)$ID
       gene_names <- rowData(manager$imputed_se)$name
-      if (is.null(gene_names)) gene_names <- protein_ids
+      if (is.null(protein_ids)) protein_ids <- rownames(imp_mat)
+      if (is.null(gene_names)) gene_names <- rownames(imp_mat)
+
+      # [修复] 将列名从 DEP 编号转为 metadata 中的 label
+      col_meta <- as.data.frame(colData(manager$imputed_se))
+      current_colnames <- colnames(imp_mat)
+
+      # 获取 label 映射
+      if ("label" %in% colnames(col_meta)) {
+        # colData 的 rownames 是当前样本名，label 列是原始样本名
+        label_mapping <- col_meta$label
+        names(label_mapping) <- rownames(col_meta)
+
+        # 替换列名
+        new_colnames <- sapply(current_colnames, function(x) {
+          if (x %in% names(label_mapping)) label_mapping[x] else x
+        })
+        colnames(imp_mat) <- new_colnames
+        colnames(missing_mask) <- new_colnames
+      }
 
       # 构建数据框
       clean_df <- data.frame(
@@ -469,9 +604,13 @@ server <- function(input, output, session) {
         stringsAsFactors = FALSE
       )
 
-      # 渲染DT表格
+      # 计算 imputed 值统计信息
+      imputed_count <- sum(missing_mask)
+      imputed_pct <- round(imputed_count / (nrow(missing_mask) * ncol(missing_mask)) * 100, 2)
+
+      # 渲染DT表格（移除逐单元格高亮以提升性能，imputed值高亮仅在下载的Excel中显示）
       output$clean_matrix_table <- renderDT({
-        dt <- datatable(
+        datatable(
           clean_df,
           options = list(
             pageLength = 25,
@@ -486,35 +625,13 @@ server <- function(input, output, session) {
           ),
           rownames = FALSE,
           class = 'cell-border stripe hover',
-          extensions = c('Buttons', 'FixedColumns')
+          extensions = c('Buttons', 'FixedColumns'),
+          caption = htmltools::tags$caption(
+            style = 'caption-side: top; text-align: left; color: #666; font-size: 12px;',
+            paste0('Imputed values: ', imputed_count, ' (', imputed_pct, '%). ',
+                   'Download Excel to see imputed cells highlighted in red.')
+          )
         )
-
-        # 标红imputed值
-        for (i in 1:nrow(missing_mask)) {
-          for (j in 1:ncol(missing_mask)) {
-            if (missing_mask[i, j]) {
-              # 列索引需要+2，因为前面有ProteinID和GeneName两列
-              col_idx <- j + 2
-              dt <- dt %>%
-                formatStyle(
-                  columns = col_idx,
-                  target = 'cell',
-                  valueColumns = col_idx,
-                  backgroundColor = styleEqual(
-                    clean_df[i, col_idx],
-                    '#ffcccc'  # 浅红色背景
-                  ),
-                  color = styleEqual(
-                    clean_df[i, col_idx],
-                    '#cc0000'  # 深红色文字
-                  ),
-                  fontWeight = 'bold'
-                )
-            }
-          }
-        }
-
-        dt
       })
 
       # 下载按钮
@@ -530,17 +647,14 @@ server <- function(input, output, session) {
           # 写入数据
           writeData(wb, "Clean Matrix", clean_df, startRow = 1, startCol = 1)
 
-          # 标记imputed值（用红色填充）
-          for (i in 1:nrow(missing_mask)) {
-            for (j in 1:ncol(missing_mask)) {
-              if (missing_mask[i, j]) {
-                # Excel中的行列索引（+1是因为有标题行，+2是因为前两列是ID和Name）
-                excel_row <- i + 1
-                excel_col <- j + 2
-                style <- createStyle(fgFill = "#ffcccc", fontColour = "#cc0000", textDecoration = "bold")
-                addStyle(wb, "Clean Matrix", style, rows = excel_row, cols = excel_col)
-              }
-            }
+          # [优化] 使用向量化操作标记imputed值（红色填充）
+          idx <- which(missing_mask, arr.ind = TRUE)
+          if (nrow(idx) > 0) {
+            style <- createStyle(fgFill = "#ffcccc", fontColour = "#cc0000", textDecoration = "bold")
+            addStyle(wb, "Clean Matrix", style,
+                     rows = idx[, 1] + 1,    # +1 因为标题行
+                     cols = idx[, 2] + 2,    # +2 因为前两列是 ProteinID 和 GeneName
+                     gridExpand = FALSE)
           }
 
           # 自动列宽
@@ -563,12 +677,20 @@ server <- function(input, output, session) {
     })
   }
   
-  # --- 1. 文件上传与 Metadata 列选择 ---
+  # --- 1. 文件选择与 Metadata 列选择 (shinyFiles) ---
   observeEvent(input$upload_file, {
-    req(input$upload_file)
+    # shinyFiles 返回的是一个列表结构，需要用 parseFilePaths 解析
+    if (is.integer(input$upload_file)) return()  # 初始状态为整数，忽略
+
+    file_selected <- parseFilePaths(get_volumes(), input$upload_file)
+    req(nrow(file_selected) > 0)
+
+    path <- as.character(file_selected$datapath)
+    rv$selected_file_path <- path  # 保存真实路径
+    file_mem$last_dir <- dirname(path)  # 记忆上次目录
+
     tryCatch({
-      path <- input$upload_file$datapath
-      add_log(paste("File uploaded:", input$upload_file$name))
+      add_log(paste("File selected:", path))
 
       temp_meta <- read_excel(path, sheet = 2)
 
@@ -584,7 +706,7 @@ server <- function(input, output, session) {
       rv$meta    <- temp_meta
       rv$annot   <- read_excel(path, sheet = 3)
 
-    }, error = function(e) { sendSweetAlert(session, "Upload Error", e$message, "error") })
+    }, error = function(e) { sendSweetAlert(session, "File Error", e$message, "error") })
   })
 
   # [新增] 根据选择的列动态生成值选择器
@@ -608,9 +730,11 @@ server <- function(input, output, session) {
   
   # --- 2. 动态缓存路径监听 ---
   observe({
-    req(input$upload_file, input$sel_filter_column)
+    req(rv$selected_file_path, input$sel_filter_column)
 
-    file_id <- tools::file_path_sans_ext(input$upload_file$name)
+    # 使用选中文件的上一层目录作为主目录
+    parent_dir <- dirname(rv$selected_file_path)
+    file_id <- tools::file_path_sans_ext(basename(rv$selected_file_path))
 
     # [修改] 根据选择的列和值生成缓存路径
     if (input$sel_filter_column == "none") {
@@ -622,13 +746,8 @@ server <- function(input, output, session) {
                            gsub("[^a-zA-Z0-9]", "_", input$sel_filter_value))
     }
 
-    # 在R包环境中，将缓存保存到用户目录
-    cache_base <- if (file.exists(here::here())) {
-      here::here("results_web_session")
-    } else {
-      file.path(getwd(), "results_web_session")
-    }
-    rv$cache_root <- file.path(cache_base, file_id, safe_filter)
+    # 在上传文件的同级目录下创建 results_web_session 文件夹
+    rv$cache_root <- file.path(parent_dir, "results_web_session", file_id, safe_filter)
 
     if(!dir.exists(rv$cache_root)) dir.create(rv$cache_root, recursive = TRUE)
 
@@ -708,9 +827,20 @@ server <- function(input, output, session) {
 
         output$qc_imp_assess <- renderPlot({ rv$manager$assess_imputation(plot_type = c("structure", "density"))$plots })
         output$qc_pca_plot <- renderPlot({ rv$manager$plot_pca(color_col = "condition") })
+        output$qc_pca_outlier_plot <- renderPlot({
+          res <- rv$manager$detect_outliers(method = "pca", sd_threshold = 3, remove = FALSE, do_plot = FALSE)
+          res$plot
+        })
+        output$qc_cor_outlier_plot <- renderPlot({
+          res <- rv$manager$detect_outliers(method = "correlation", sd_threshold = 3, remove = FALSE, do_plot = FALSE)
+          res$plot
+        })
 
         # [新增] 生成Clean Matrix
         generate_clean_matrix(rv$manager)
+
+        # [新增] 更新 outlier picker
+        update_outlier_picker()
 
         updateTabsetPanel(session, "subtab_wizard", selected = "Clean Matrix")
       }
@@ -776,6 +906,14 @@ server <- function(input, output, session) {
         assess_res <- rv$manager$assess_imputation(plot_type = c("structure", "density"))
         output$qc_imp_assess <- renderPlot({ assess_res$plots })
         output$qc_pca_plot <- renderPlot({ rv$manager$plot_pca(color_col = "condition") })
+        output$qc_pca_outlier_plot <- renderPlot({
+          res <- rv$manager$detect_outliers(method = "pca", sd_threshold = 3, remove = FALSE, do_plot = FALSE)
+          res$plot
+        })
+        output$qc_cor_outlier_plot <- renderPlot({
+          res <- rv$manager$detect_outliers(method = "correlation", sd_threshold = 3, remove = FALSE, do_plot = FALSE)
+          res$plot
+        })
 
         # [新增] 初始化outlier status显示
         output$txt_outlier_status <- renderUI({
@@ -786,6 +924,9 @@ server <- function(input, output, session) {
 
         # [新增] 生成初始Clean Matrix
         generate_clean_matrix(rv$manager)
+
+        # [新增] 更新 outlier picker
+        update_outlier_picker()
       })
       sendSweetAlert(session, "Success", "Imputation done & Saved.\nClean Matrix generated.", "success")
       updateTabsetPanel(session, "subtab_wizard", selected = "Clean Matrix")
@@ -800,36 +941,32 @@ server <- function(input, output, session) {
   
   # --- 5. Outlier Detection and Removal ---
 
-  # 动态生成outlier picker - 显示所有可用样本
-  output$ui_outlier_picker <- renderUI({
-    req(rv$manager)
+  # 辅助函数：更新 outlier picker 的选项
+  update_outlier_picker <- function() {
+    if (is.null(rv$manager)) return()
 
-    # 如果有backup，使用backup中的样本列表（这是完整的样本列表）
-    # 否则使用当前imputed_se的样本列表
-    se_obj <- if(!is.null(rv$manager$imputed_se_backup)) {
+    # 获取完整的样本列表
+    se_obj <- if (!is.null(rv$manager$imputed_se_backup)) {
       rv$manager$imputed_se_backup
-    } else if(!is.null(rv$manager$imputed_se)) {
+    } else if (!is.null(rv$manager$imputed_se)) {
       rv$manager$imputed_se
     } else {
-      return(NULL)
+      return()
     }
 
     all_samples <- colnames(se_obj)
 
     # 计算当前已被移除的样本
-    removed_samples <- if(!is.null(rv$manager$imputed_se_backup)) {
+    removed_samples <- if (!is.null(rv$manager$imputed_se_backup)) {
       setdiff(colnames(rv$manager$imputed_se_backup), colnames(rv$manager$imputed_se))
     } else {
       character(0)
     }
 
-    pickerInput("sel_outliers", "Select Samples to Remove:",
-                choices = all_samples,
-                selected = removed_samples,  # 预选当前已移除的样本
-                multiple = TRUE,
-                options = list(`actions-box`=TRUE, `live-search`=TRUE,
-                              `selected-text-format`= "count > 3"))
-  })
+    updatePickerInput(session, "sel_outliers",
+                      choices = all_samples,
+                      selected = removed_samples)
+  }
 
   # Auto-Detect按钮：自动检测outliers
   observeEvent(input$btn_detect_outlier, {
@@ -841,6 +978,9 @@ server <- function(input, output, session) {
         rv$manager$reset_data()
         add_log("Reset to full dataset before detection.")
       }
+
+      # [修复] 先更新 picker 的 choices，确保下拉菜单显示所有样本
+      update_outlier_picker()
 
       # 运行outlier检测
       res <- rv$manager$detect_outliers(method = "pca", sd_threshold = 2.5, do_plot = TRUE)
@@ -864,6 +1004,14 @@ server <- function(input, output, session) {
       output$qc_pca_plot <- renderPlot({
         rv$manager$plot_pca(color_col = "condition") +
           ggtitle("PCA - After Detection (No Changes Yet)")
+      })
+      output$qc_pca_outlier_plot <- renderPlot({
+        res <- rv$manager$detect_outliers(method = "pca", sd_threshold = 3, remove = FALSE, do_plot = FALSE)
+        res$plot
+      })
+      output$qc_cor_outlier_plot <- renderPlot({
+        res <- rv$manager$detect_outliers(method = "correlation", sd_threshold = 3, remove = FALSE, do_plot = FALSE)
+        res$plot
       })
 
     }, error = function(e) {
@@ -924,6 +1072,14 @@ server <- function(input, output, session) {
           rv$manager$plot_pca(color_col = "condition") +
             ggtitle(paste("PCA - After Removing", length(target_samples), "Sample(s)"))
         })
+        output$qc_pca_outlier_plot <- renderPlot({
+          res <- rv$manager$detect_outliers(method = "pca", sd_threshold = 3, remove = FALSE, do_plot = FALSE)
+          res$plot
+        })
+        output$qc_cor_outlier_plot <- renderPlot({
+          res <- rv$manager$detect_outliers(method = "correlation", sd_threshold = 3, remove = FALSE, do_plot = FALSE)
+          res$plot
+        })
 
         # 可选：更新imputation QC plot
         output$qc_imp_assess <- renderPlot({
@@ -937,6 +1093,9 @@ server <- function(input, output, session) {
 
         # [新增] 生成Clean Matrix表格
         generate_clean_matrix(rv$manager)
+
+        # [新增] 更新 outlier picker
+        update_outlier_picker()
 
         sendSweetAlert(session, "Success",
                       paste("Successfully removed", length(target_samples), "sample(s).\nClean Matrix generated."),
@@ -953,6 +1112,14 @@ server <- function(input, output, session) {
 
         output$qc_pca_plot <- renderPlot({
           rv$manager$plot_pca(color_col = "condition") + ggtitle("PCA - Full Dataset")
+        })
+        output$qc_pca_outlier_plot <- renderPlot({
+          res <- rv$manager$detect_outliers(method = "pca", sd_threshold = 3, remove = FALSE, do_plot = FALSE)
+          res$plot
+        })
+        output$qc_cor_outlier_plot <- renderPlot({
+          res <- rv$manager$detect_outliers(method = "correlation", sd_threshold = 3, remove = FALSE, do_plot = FALSE)
+          res$plot
         })
 
         # 保存恢复后的状态
@@ -977,7 +1144,8 @@ server <- function(input, output, session) {
       selectInput("sel_condition_col", "Condition Column:", choices = cols, selected = "condition"),
       conditionalPanel("input.analysis_mode == 'group'",
                        selectInput("sel_control", "Control:", choices = NULL),
-                       selectInput("sel_case", "Case:", choices = NULL)),
+                       selectInput("sel_case", "Case:", choices = NULL),
+                       selectInput("sel_paired_col", "Paired Column (Repeated Measures):", choices = c("None", cols), selected = "None")),
       pickerInput("sel_covariates", "Covariates:", choices = cols, multiple = TRUE)
     )
   })
@@ -1094,6 +1262,7 @@ server <- function(input, output, session) {
       paste("Case Group:", if(input$analysis_mode == "group") input$sel_case else "N/A"),
       paste("Control Group:", if(input$analysis_mode == "group") input$sel_control else "N/A"),
       paste("Covariates:", if(length(input$sel_covariates) > 0) paste(input$sel_covariates, collapse = ", ") else "None"),
+      paste("Paired Column:", if(!is.null(input$sel_paired_col) && input$sel_paired_col != "None") input$sel_paired_col else "None"),
       paste("P-value Cutoff:", input$param_pval),
       paste("LogFC Cutoff:", if(input$analysis_mode == "group") input$param_logfc else "N/A"),
       paste("Correlation Cutoff:", if(input$analysis_mode == "continuous") input$param_corr else "N/A"),
@@ -1122,7 +1291,8 @@ server <- function(input, output, session) {
           }
           if(input$run_gsva) { gt <- ProteomicsGSVA$new(rv$manager); gt$run_gsva(dbs = c("GOBP", "GOMF", "GOCC", "KEGG", "Wiki")); rv$gsva_tool <- gt; write_rds(gt, file.path(full_res_dir, "gsva_tool.rds")) }
         } else {
-          res_objs <- run_proteomics_pipeline(data_manager = rv$manager, analysis_type = input$analysis_mode, condition_col = input$sel_condition_col, control_group = input$sel_control, case_group = input$sel_case, continuous_col = if(input$analysis_mode == "continuous") input$sel_condition_col else NULL, covariates = if(length(input$sel_covariates)==0) NULL else input$sel_covariates, results_dir = rv$cache_root, sub_folder_name = final_sub_folder, pval_cutoff = input$param_pval, enrich_pval_cutoff = input$param_enrich_pval, logfc_cutoff = input$param_logfc, corr_cutoff = input$param_corr, r2_cutoff = input$param_r2, top_n_labels = 10, use_adj_pval_sig = input$param_use_adj, run_gsva = input$run_gsva, gsva_dbs = c("GOBP", "GOMF", "GOCC", "KEGG", "Wiki", "Reactome"))
+          paired_col_val <- if(!is.null(input$sel_paired_col) && input$sel_paired_col != "None") input$sel_paired_col else NULL
+          res_objs <- run_proteomics_pipeline(data_manager = rv$manager, analysis_type = input$analysis_mode, condition_col = input$sel_condition_col, control_group = input$sel_control, case_group = input$sel_case, continuous_col = if(input$analysis_mode == "continuous") input$sel_condition_col else NULL, covariates = if(length(input$sel_covariates)==0) NULL else input$sel_covariates, paired_col = paired_col_val, results_dir = rv$cache_root, sub_folder_name = final_sub_folder, pval_cutoff = input$param_pval, enrich_pval_cutoff = input$param_enrich_pval, logfc_cutoff = input$param_logfc, corr_cutoff = input$param_corr, r2_cutoff = input$param_r2, top_n_labels = 10, use_adj_pval_sig = input$param_use_adj, run_gsva = input$run_gsva, gsva_dbs = c("GOBP", "GOMF", "GOCC", "KEGG", "Wiki", "Reactome"))
           rv$diff_tool <- res_objs$diff_tool; rv$enrich_tool <- res_objs$enrich_tool; rv$gsva_tool <- res_objs$gsva_tool
         }
       })
@@ -1136,7 +1306,44 @@ server <- function(input, output, session) {
   # --- Visualization ---
   output$txt_current_params <- renderUI({ if(is.null(rv$loaded_params)) return(HTML("<i>No analysis loaded.</i>")); wellPanel(style = "background-color: #f9fafe; font-size: 11px; padding: 5px;", HTML(paste0("<b>Current Analysis:</b><br>", rv$loaded_params))) })
 
-  output$vis_slider_fc <- renderUI({ req(rv$diff_tool); if("logFC" %in% colnames(rv$diff_tool$diff_results)) sliderInput("vis_fc", "LogFC Cutoff:", 0, 3, input$param_logfc) else NULL })
+  output$vis_slider_fc <- renderUI({
+    req(rv$diff_tool)
+    if("logFC" %in% colnames(rv$diff_tool$diff_results)) {
+      fluidRow(
+        column(8, sliderInput("vis_fc", "LogFC Cutoff:", min = 0, max = 2, value = input$param_logfc, step = 0.01)),
+        column(4, numericInput("vis_input_fc", "Value:", value = input$param_logfc, min = 0, max = 10, step = 0.01))
+      )
+    } else {
+      NULL
+    }
+  })
+
+  # --- 同步 LogFC 滑动条和输入框 ---
+  observeEvent(input$vis_fc, {
+    if(!is.null(input$vis_input_fc) && !isTRUE(all.equal(input$vis_fc, input$vis_input_fc))) {
+      updateNumericInput(session, "vis_input_fc", value = input$vis_fc)
+    }
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$vis_input_fc, {
+    if(!is.null(input$vis_fc) && !isTRUE(all.equal(input$vis_input_fc, input$vis_fc))) {
+      updateSliderInput(session, "vis_fc", value = input$vis_input_fc)
+    }
+  }, ignoreInit = TRUE)
+
+  # --- 同步 P-val 滑动条和输入框 ---
+  observeEvent(input$vis_slider_pval, {
+    if(!is.null(input$vis_input_pval) && !isTRUE(all.equal(input$vis_slider_pval, input$vis_input_pval))) {
+      updateNumericInput(session, "vis_input_pval", value = input$vis_slider_pval)
+    }
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$vis_input_pval, {
+    if(!is.null(input$vis_slider_pval) && !isTRUE(all.equal(input$vis_input_pval, input$vis_slider_pval))) {
+      updateSliderInput(session, "vis_slider_pval", value = input$vis_input_pval)
+    }
+  }, ignoreInit = TRUE)
+
   output$vis_volcano <- renderPlot({
     req(rv$diff_tool)
     if(input$analysis_mode == "anova") {
@@ -1232,33 +1439,69 @@ server <- function(input, output, session) {
 
     # 获取annotation
     anno_df <- as.data.frame(colData(se))
+
+    # 使用 ComplexHeatmap 替代 pheatmap，确保在 Shiny 网页中正确显示
+    ha <- NULL
     if(input$sel_condition_col %in% colnames(anno_df)) {
-      anno_col <- data.frame(row.names = colnames(mat))
-      anno_col[[input$sel_condition_col]] <- anno_df[[input$sel_condition_col]]
-    } else {
-      anno_col <- NA
+      annot_vals <- anno_df[[input$sel_condition_col]]
+      # 对 groups 排序以确保颜色分配一致
+      groups <- sort(unique(as.character(annot_vals)))
+      # 使用 ggsci 配色
+      if(length(groups) <= 10) {
+        colors <- ggsci::pal_npg()(length(groups))
+      } else {
+        colors <- ggsci::pal_d3("category20")(length(groups))
+      }
+      group_colors <- setNames(colors, groups)
+
+      # 创建注释数据框，列名必须与 col_list 的键名一致
+      annot_df_for_heatmap <- data.frame(annot_vals, row.names = colnames(mat))
+      colnames(annot_df_for_heatmap) <- input$sel_condition_col
+
+      col_list <- list()
+      col_list[[input$sel_condition_col]] <- group_colors
+
+      ha <- ComplexHeatmap::HeatmapAnnotation(
+        df = annot_df_for_heatmap,
+        col = col_list,
+        show_annotation_name = TRUE
+      )
     }
 
-    # 使用 ggplotify 转换 pheatmap 为 ggplot 对象，确保在 Shiny 网页中显示
-    p <- pheatmap::pheatmap(
+    ht <- ComplexHeatmap::Heatmap(
       mat_scaled,
-      main = heatmap_title,
+      name = "Z-score",
+      column_title = heatmap_title,
+      top_annotation = ha,
       cluster_rows = input$heat_cluster_row,
-      cluster_cols = input$heat_cluster_col,
-      annotation_col = anno_col,
-      show_rownames = (length(sig_prots) <= 50),
-      show_colnames = TRUE,
-      fontsize_row = 8,
-      fontsize_col = 8,
-      color = colorRampPalette(c("navy", "white", "firebrick3"))(100),
-      border_color = NA,
-      silent = TRUE
+      cluster_columns = input$heat_cluster_col,
+      show_row_names = (length(sig_prots) <= 50),
+      show_column_names = TRUE,
+      row_names_gp = grid::gpar(fontsize = 8),
+      column_names_gp = grid::gpar(fontsize = 8),
+      col = circlize::colorRamp2(c(-2, 0, 2), c("navy", "white", "firebrick3"))
     )
-    ggplotify::as.ggplot(p)
+
+    grid::grid.newpage()
+    ComplexHeatmap::draw(ht)
   })
   output$vis_pca <- renderPlot({ req(rv$manager); rv$manager$plot_pca(color_col = input$sel_condition_col) })
-  output$vis_selector_protein <- renderUI({ req(rv$manager); selectizeInput("vis_sel_prot", "Protein:", choices = rownames(rv$manager$imputed_se)) })
-  output$vis_single_prot <- renderPlot({ req(rv$manager, input$vis_sel_prot); rv$manager$plot_protein_expression(input$vis_sel_prot, variable = input$sel_condition_col) })
+  output$vis_selector_protein <- renderUI({
+    req(rv$manager)
+    pickerInput("vis_sel_prot", "Select Proteins (max 9):",
+                choices = rownames(rv$manager$imputed_se),
+                multiple = TRUE,
+                options = list(
+                  `max-options` = 9,
+                  `live-search` = TRUE,
+                  `actions-box` = TRUE,
+                  `selected-text-format` = "count > 3"
+                ))
+  })
+  output$vis_single_prot <- renderPlot({
+    req(rv$manager, input$vis_sel_prot)
+    rv$manager$plot_protein_expression(input$vis_sel_prot, variable = input$sel_condition_col)
+  })
   
   output$vis_ora_plot <- renderPlot({
     req(rv$diff_tool)
@@ -1334,7 +1577,10 @@ server <- function(input, output, session) {
     if(input$vis_gsva_plot_type == "Volcano") {
       gt$plot_pathway_volcano(db, pval_cutoff = input$vis_slider_pval)
     } else if (input$vis_gsva_plot_type == "Heatmap") {
-      gt$plot_pathway_heatmap(db, group_col = input$sel_condition_col)
+      # ComplexHeatmap 需要用 draw() 并通过 grid.grabExpr 捕获
+      ht <- gt$plot_pathway_heatmap(db, group_col = input$sel_condition_col)
+      grid::grid.newpage()
+      ComplexHeatmap::draw(ht)
     } else {
       gt$plot_pathway_gsea_bar(db)
     }

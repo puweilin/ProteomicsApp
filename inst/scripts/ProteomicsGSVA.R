@@ -724,12 +724,13 @@ ProteomicsGSVA <- R6Class("ProteomicsGSVA",
 
           annot_df <- data.frame(Group = annot_vals)
           colnames(annot_df) <- group_col
-          
-          groups <- unique(as.character(annot_vals))
+
+          # 对 groups 排序以确保颜色分配一致
+          groups <- sort(unique(as.character(annot_vals)))
           if(length(groups) <= 10) {
              colors <- ggsci::pal_npg()(length(groups))
           } else {
-             colors <- rainbow(length(groups))
+             colors <- ggsci::pal_d3("category20")(length(groups))
           }
           group_colors <- setNames(colors, groups)
           

@@ -43,6 +43,7 @@ run_proteomics_pipeline <- function(data_manager,
 
                                     # --- 通用参数 ---
                                     covariates = NULL,
+                                    paired_col = NULL,
                                     results_dir = "Results",
                                     sub_folder_name = NULL,
                                     pval_cutoff = 0.05,
@@ -85,11 +86,11 @@ run_proteomics_pipeline <- function(data_manager,
     }
   }
 
-  subresult_dir <- here::here(results_dir, sub_folder_name)
-  enrich_dir <- here::here(subresult_dir, "Enrich_ORA")
-  gsea_dir <- here::here(subresult_dir, "Enrich_GSEA")
-  gsva_dir <- here::here(subresult_dir, "GSVA_Results")
-  gsva_plots_dir <- here::here(gsva_dir, "Plots")
+  subresult_dir <- file.path(results_dir, sub_folder_name)
+  enrich_dir <- file.path(subresult_dir, "Enrich_ORA")
+  gsea_dir <- file.path(subresult_dir, "Enrich_GSEA")
+  gsva_dir <- file.path(subresult_dir, "GSVA_Results")
+  gsva_plots_dir <- file.path(gsva_dir, "Plots")
 
   if (!dir.exists(subresult_dir)) dir.create(subresult_dir, recursive = TRUE)
   message(paste("  Output directory:", subresult_dir))
@@ -108,7 +109,8 @@ run_proteomics_pipeline <- function(data_manager,
         condition_col = condition_col,
         control_group = control_group,
         case_group = case_group,
-        covariates = covariates
+        covariates = covariates,
+        paired_col = paired_col
       )
     } else {
       message(paste0("  Running Continuous Analysis: ", continuous_col))
@@ -120,7 +122,7 @@ run_proteomics_pipeline <- function(data_manager,
 
     # 绘图与保存
     message("  Generating Volcano Plot...")
-    pdf(here::here(subresult_dir, "volcano.pdf"), width = 10, height = 8)
+    pdf(file.path(subresult_dir, "volcano.pdf"), width = 10, height = 8)
     p <- diff_tool$plot_volcano(
       logfc_cutoff = logfc_cutoff,
       r2_cutoff = r2_cutoff,
@@ -142,16 +144,16 @@ run_proteomics_pipeline <- function(data_manager,
     message(paste0("  Significant proteins found: ", length(sig_proteins)))
 
     # 保存结果
-    openxlsx::write.xlsx(diff_tool$diff_results, file = here::here(subresult_dir, "Total_Proteins.xlsx"))
-    openxlsx::write.xlsx(diff_tool$sig_results, file = here::here(subresult_dir, "Sig_Proteins.xlsx"))
-    write_rds(diff_tool, here::here(subresult_dir, "diff_tool.rds"))
+    openxlsx::write.xlsx(diff_tool$diff_results, file = file.path(subresult_dir, "Total_Proteins.xlsx"))
+    openxlsx::write.xlsx(diff_tool$sig_results, file = file.path(subresult_dir, "Sig_Proteins.xlsx"))
+    write_rds(diff_tool, file.path(subresult_dir, "diff_tool.rds"))
     
   } else {
     message("--- Skipping Differential Analysis (run_diff = FALSE) ---")
     
     # 如果不跑 Diff 但要跑 Enrich，必须尝试加载旧结果
     if (run_enrichment) {
-      rds_path <- here::here(subresult_dir, "diff_tool.rds")
+      rds_path <- file.path(subresult_dir, "diff_tool.rds")
       if (file.exists(rds_path)) {
         message("  [Auto-Load] Found existing diff_tool.rds, loading for enrichment analysis...")
         diff_tool <- read_rds(rds_path)
@@ -195,7 +197,7 @@ run_proteomics_pipeline <- function(data_manager,
       enrich_tool$gsea_to_excel(output_prefix = "Enrich_GSEA", target_dir = gsea_dir)
 
       # 保存 enrich_tool 对象
-      write_rds(enrich_tool, here::here(subresult_dir, "enrich_tool.rds"))
+      write_rds(enrich_tool, file.path(subresult_dir, "enrich_tool.rds"))
       message("  Enrichment Analysis Completed.")
 
     } else {
@@ -259,7 +261,7 @@ run_proteomics_pipeline <- function(data_manager,
     message("  Generating GSVA visualization plots...")
 
     for (db in gsva_dbs) {
-      db_plots_dir <- here::here(gsva_plots_dir, db)
+      db_plots_dir <- file.path(gsva_plots_dir, db)
       if (!dir.exists(db_plots_dir)) dir.create(db_plots_dir, recursive = TRUE)
 
       if (is.null(gsva_tool$gsva_results[[db]])) {
@@ -278,7 +280,7 @@ run_proteomics_pipeline <- function(data_manager,
           top_n = top_n_labels,
           adjusted = gsva_adjusted
         )
-        ggsave(plot = p_volcano, filename = here::here(db_plots_dir, paste0("Volcano_", db, ".pdf")),
+        ggsave(plot = p_volcano, filename = file.path(db_plots_dir, paste0("Volcano_", db, ".pdf")),
                width = 10, height = 8)
       }, error = function(e) {
         message(paste("  Error plotting volcano for", db, ":", e$message))
@@ -293,7 +295,7 @@ run_proteomics_pipeline <- function(data_manager,
             group_col = condition_col,
             show_sample_annot = TRUE
           )
-          pdf(here::here(db_plots_dir, paste0("Heatmap_", db, ".pdf")), width = 12, height = 10)
+          pdf(file.path(db_plots_dir, paste0("Heatmap_", db, ".pdf")), width = 12, height = 10)
           print(ht_heatmap)
           dev.off()
         }
@@ -308,7 +310,7 @@ run_proteomics_pipeline <- function(data_manager,
           top_n = 20,
           sort_by = ifelse(analysis_type == "group", "logFC", "Correlation")
         )
-        ggsave(plot = p_bar, filename = here::here(db_plots_dir, paste0("GSEA_Bar_", db, ".pdf")),
+        ggsave(plot = p_bar, filename = file.path(db_plots_dir, paste0("GSEA_Bar_", db, ".pdf")),
                width = 12, height = 8)
       }, error = function(e) {
         message(paste("  Error plotting GSEA bar for", db, ":", e$message))
@@ -321,7 +323,7 @@ run_proteomics_pipeline <- function(data_manager,
             db = db,
             top_n = min(20, nrow(gsva_tool$diff_pathways[[db]]))
           )
-          pdf(here::here(db_plots_dir, paste0("Correlation_", db, ".pdf")), width = 12, height = 10)
+          pdf(file.path(db_plots_dir, paste0("Correlation_", db, ".pdf")), width = 12, height = 10)
           print(ht_corr)
           dev.off()
         }
@@ -331,10 +333,10 @@ run_proteomics_pipeline <- function(data_manager,
     }
 
     # 6.4 保存所有差异通路汇总
-    gsva_tool$save_all_diff_results(here::here(gsva_dir, "All_DiffPathways_Summary.xlsx"))
+    gsva_tool$save_all_diff_results(file.path(gsva_dir, "All_DiffPathways_Summary.xlsx"))
 
     # 保存 gsva_tool 对象
-    write_rds(gsva_tool, here::here(subresult_dir, "gsva_tool.rds"))
+    write_rds(gsva_tool, file.path(subresult_dir, "gsva_tool.rds"))
     message("  GSVA Analysis Completed.")
     
   } else {
