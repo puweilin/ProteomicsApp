@@ -29,6 +29,7 @@ Imports:
     here,
     ggplot2,
     ggrepel,
+    ggpubr,
     patchwork,
     R6,
     broom,
