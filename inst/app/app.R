@@ -528,7 +528,7 @@ server <- function(input, output, session) {
     }
   }
 
-  shinyFileChoose(input, "upload_file", roots = get_volumes, filetypes = c("xlsx"))
+  shinyFileChoose(input, "upload_file", roots = get_volumes, session = session, filetypes = c("xlsx"))
 
   # 显示选中的文件路径
   output$selected_file_path <- renderText({
