@@ -24,6 +24,7 @@ Imports:
     dplyr,
     tidyr,
     readxl,
+    readr,
     openxlsx,
     DT,
     here,
@@ -31,6 +32,7 @@ Imports:
     ggrepel,
     ggpubr,
     patchwork,
+    reshape2,
     R6,
     broom,
     missForest,
@@ -55,6 +57,7 @@ Imports:
     org.Hs.eg.db,
     ReactomePA,
     Mfuzz,
+    msigdbr,
     ComplexHeatmap,
     GSVA,
     GSEABase
