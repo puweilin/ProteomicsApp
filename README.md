@@ -49,7 +49,7 @@ if (!requireNamespace("devtools", quietly = TRUE)) {
 }
 
 # 从GitHub安装ProteomicsApp
-devtools::install_github("your-username/ProteomicsApp")
+devtools::install_github("puweilin/ProteomicsApp")
 ```
 
 ### 本地安装
