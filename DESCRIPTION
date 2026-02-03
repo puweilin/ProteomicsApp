@@ -2,7 +2,7 @@ Package: ProteomicsApp
 Title: Proteomics Data Analysis Platform
 Version: 1.0.0
 Authors@R:
-    person("Your", "Name", email = "your.email@example.com", role = c("aut", "cre"))
+    person("william.pu" email = "william.pu@loreal.com", role = c("aut", "cre"))
 Description: A comprehensive Shiny application for proteomics data analysis,
     including data preprocessing, quality control, differential expression analysis,
     and pathway enrichment analysis.
