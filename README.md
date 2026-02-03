@@ -237,15 +237,8 @@ MIT License - 详见[LICENSE](LICENSE)文件
 ## 联系方式
 
 - 问题反馈: [GitHub Issues](https://github.com/your-username/ProteomicsApp/issues)
-- 邮件: your.email@example.com
+- 邮件: puweilin@gmail.com
 
-## 引用
-
-如果您在研究中使用了ProteomicsApp，请引用：
-
-```
-Your Name (2025). ProteomicsApp: A Comprehensive Proteomics Analysis Platform.
-R package version 1.0.0. https://github.com/your-username/ProteomicsApp
 ```
 
 ---
