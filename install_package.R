@@ -37,11 +37,12 @@ if (!requireNamespace("BiocManager", quietly = TRUE)) {
 # 步骤3: 安装CRAN依赖包
 cat("步骤 3/4: 安装 CRAN 依赖包...\n")
 cran_packages <- c(
-  "shiny", "shinydashboard", "shinyWidgets", "shinyjs", "shinybusy", "shinythemes",
-  "tidyverse", "dplyr", "tidyr", "readxl", "openxlsx", "DT", "here",
-  "ggplot2", "ggrepel", "patchwork", "R6", "broom",
+  "shiny", "shinydashboard", "shinyWidgets", "shinyjs", "shinybusy", "shinythemes", "shinyFiles",
+  "tidyverse", "dplyr", "tidyr", "readxl", "readr", "openxlsx", "DT", "here",
+  "ggplot2", "ggrepel", "ggpubr", "patchwork", "R6", "broom", "ggsci",
   "missForest", "doParallel", "glmnet", "caret", "splines",
-  "pheatmap", "viridis", "digest", "jsonlite", "ggplotify", "grid"
+  "pheatmap", "viridis", "circlize", "digest", "jsonlite", "ggplotify",
+  "vegan", "cowplot", "msigdbr", "reshape2", "grid"
 )
 
 missing_cran <- cran_packages[!sapply(cran_packages, requireNamespace, quietly = TRUE)]
