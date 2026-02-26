@@ -7,7 +7,7 @@ setup_environment <- function() {
     "tidyverse", "readxl", "openxlsx", "DT", "here",
     "ggplot2", "ggrepel", "patchwork", "R6", "broom", "ggsci", "circlize",
     "missForest", "doParallel", "glmnet", "caret", "splines",
-    "pheatmap", "viridis", "digest", "jsonlite", "shinythemes", "ggplotify"
+    "pheatmap", "viridis", "digest", "jsonlite", "ggplotify", "vegan", "cowplot"
   )
   
   bioc_packages <- c(
@@ -445,12 +445,12 @@ ui <- navbarPage(
                           checkboxInput("run_gsva", "Run GSVA? (Time Consuming)", TRUE),
                           
                           hr(),
+                          actionButton("btn_run_pipeline", "Run New Analysis", icon = icon("rocket"), class = "btn-danger", width = "100%"),
+
+                          hr(),
                           h4("Result Management"),
                           uiOutput("ui_analysis_history"),
-                          splitLayout(
-                            actionButton("btn_run_pipeline", "Run New Analysis", icon = icon("rocket"), class = "btn-danger", width = "100%"),
-                            uiOutput("ui_btn_load_analysis")
-                          )
+                          uiOutput("ui_btn_load_analysis")
              ),
              mainPanel(width = 9,
                        h4("Analysis Log Console"),
@@ -1285,7 +1285,7 @@ server <- function(input, output, session) {
 
           # [修复] 安全检查 sig_results 是否存在且有数据
           if(!is.null(dt$sig_results) && nrow(dt$sig_results) > 0) {
-            et <- EnrichmentAnalyst$new(); sig_genes <- dt$sig_results$Protein[dt$sig_results$adj.P.Val < input$param_pval]
+            et <- EnrichmentAnalyst$new(); sig_genes <- dt$sig_results$Protein
             et$ora_up <- et$run_comprehensive_ora(sig_genes, rownames(rv$manager$imputed_se), input$param_enrich_pval)
             rv$enrich_tool <- et; write_rds(et, file.path(full_res_dir, "enrich_tool.rds"))
           }

@@ -20,6 +20,7 @@ library(glmnet)
 library(caret)
 library(ComplexHeatmap)
 library(circlize)
+library(cowplot)
 
 # --- Class 1: 数据管理与预处理 ---
 # --- Class 1: 数据管理与预处理 (Updated with Missing Filter) ---
@@ -1467,7 +1468,7 @@ EnrichmentAnalyst <- R6Class("EnrichmentAnalyst",
         genes_fixed[genes_fixed == old_name] <- fix_map[old_name]
       }
 
-      bitr(gene_symbols, fromType = "SYMBOL", toType = "ENTREZID", OrgDb = self$organism_db)$ENTREZID
+      bitr(genes_fixed, fromType = "SYMBOL", toType = "ENTREZID", OrgDb = self$organism_db)$ENTREZID
     },
     
     # 综合 ORA 分析 (Top 10 上下调)

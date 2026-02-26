@@ -131,7 +131,7 @@ ProteomicsGSVA <- R6Class("ProteomicsGSVA",
 
       }, error = function(e) {
         message(paste("  Error loading", db, ":", e$message))
-        gs_list <- list() 
+        gs_list <<- list()
       })
 
       return(gs_list)
@@ -472,8 +472,8 @@ ProteomicsGSVA <- R6Class("ProteomicsGSVA",
         }
         
         results <- list()
-        for (pathway in rownames(gsva_mat)) {
-          pathway_expr <- gsva_mat[pathway, ]
+        for (pathway in rownames(gsva_subset)) {
+          pathway_expr <- gsva_subset[pathway, ]
 
           if (is.null(covariates) || !use_ppcor) {
             cor_res <- suppressWarnings(cor.test(pathway_expr, cont_vals, method = method))
@@ -864,7 +864,7 @@ ProteomicsGSVA <- R6Class("ProteomicsGSVA",
       }
 
       if (add_stats && length(unique(plot_df$Group)) >= 2) {
-        p <- p + stat_compare_method(method = ifelse(length(unique(plot_df$Group)) == 2, "t.test", "anova"),
+        p <- p + stat_compare_means(method = ifelse(length(unique(plot_df$Group)) == 2, "t.test", "anova"),
                                       label = "p.format")
       }
       return(p)
