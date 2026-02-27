@@ -61,7 +61,10 @@ Imports:
     msigdbr,
     ComplexHeatmap,
     GSVA,
-    GSEABase
+    GSEABase,
+    KEGGREST,
+    GO.db,
+    reactome.db
 Suggests:
     testthat (>= 3.0.0),
     knitr,

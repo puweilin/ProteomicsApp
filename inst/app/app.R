@@ -11,9 +11,9 @@ setup_environment <- function() {
   )
   
   bioc_packages <- c(
-    "DEP", "SummarizedExperiment", "limma",                            
-    "clusterProfiler", "enrichplot", "org.Hs.eg.db", "ReactomePA",     
-    "Mfuzz", "ComplexHeatmap", "GSVA", "GSEABase"                                                          
+    "DEP", "SummarizedExperiment", "limma",
+    "clusterProfiler", "enrichplot", "org.Hs.eg.db", "ReactomePA",
+    "Mfuzz", "ComplexHeatmap", "GSVA", "GSEABase", "KEGGREST"
   )
   
   options(repos = c(CRAN = "https://cloud.r-project.org"))
@@ -34,6 +34,7 @@ if (pkg_scripts_dir == "") {
     pkg_scripts_dir <- here::here("scripts")
   }
 }
+source(file.path(pkg_scripts_dir, "GeneSetCacheManager.R"))
 source(file.path(pkg_scripts_dir, "ProteomicsAnalysis.R"))
 source(file.path(pkg_scripts_dir, "ProteomicsGSVA.R"))
 source(file.path(pkg_scripts_dir, "run_proteomics_pipeline.R"))
@@ -443,7 +444,12 @@ ui <- navbarPage(
                           numericInput("param_enrich_pval", "Enrich P-val:", 0.05, step = 0.01),
                           checkboxInput("param_use_adj", "Use Adjusted P-val?", TRUE),
                           checkboxInput("run_gsva", "Run GSVA? (Time Consuming)", TRUE),
-                          
+
+                          hr(),
+                          h4("Gene Set Database"),
+                          uiOutput("ui_cache_status"),
+                          uiOutput("ui_cache_update_banner"),
+
                           hr(),
                           actionButton("btn_run_pipeline", "Run New Analysis", icon = icon("rocket"), class = "btn-danger", width = "100%"),
 
@@ -505,13 +511,86 @@ server <- function(input, output, session) {
     logs = character(0),
     cache_root = NULL,
     selected_file_path = NULL,  # 存储用户选择的文件真实路径
-    loaded_params = NULL 
+    loaded_params = NULL,
+    cache_manager = NULL,       # GeneSetCacheManager
+    cache_update_info = NULL    # result of check_for_updates()
   )
   
   add_log <- function(msg) {
     rv$logs <- c(paste0(format(Sys.time(), "[%H:%M:%S] "), msg), rv$logs)
   }
   output$analysis_log <- renderText({ paste(rv$logs, collapse = "\n") })
+
+  # --- Gene Set Cache: auto-build on first launch, check for updates on subsequent launches ---
+  observe({
+    # Run once on session start
+    if (!is.null(rv$cache_manager)) return()
+
+    rv$cache_manager <- GeneSetCacheManager$new()
+
+    if (!rv$cache_manager$is_cache_exists()) {
+      # First time: build cache with progress modal
+      showModal(modalDialog(
+        title = "Building Gene Set Cache",
+        "Building gene set cache for first use. This requires internet access and may take a few minutes...",
+        footer = NULL
+      ))
+      tryCatch({
+        rv$cache_manager$build_cache()
+        removeModal()
+        showNotification("Gene set cache ready!", type = "message", duration = 5)
+        add_log("Gene set cache built successfully.")
+      }, error = function(e) {
+        removeModal()
+        showNotification(
+          paste("Cache build failed:", e$message, "- Enrichment will use online APIs as fallback."),
+          type = "warning", duration = 10
+        )
+        add_log(paste("Gene set cache build failed:", e$message))
+      })
+    } else {
+      # Quick local check (no network)
+      rv$cache_update_info <- rv$cache_manager$check_for_updates()
+      add_log("Gene set cache loaded.")
+    }
+  })
+
+  # --- Cache status display ---
+  output$ui_cache_status <- renderUI({
+    req(rv$cache_manager)
+    info <- rv$cache_manager$get_cache_info()
+    tags$small(style = "color:grey;", HTML(info))
+  })
+
+  # --- Cache update banner ---
+  output$ui_cache_update_banner <- renderUI({
+    req(rv$cache_update_info)
+    if (rv$cache_update_info$needs_refresh) {
+      reason <- if (rv$cache_update_info$has_update) {
+        "Annotation database update available"
+      } else {
+        paste0("Cache expired (", rv$cache_update_info$cache_age_days, " days old)")
+      }
+      div(class = "alert alert-warning", style = "padding: 8px; margin-top: 5px;",
+        icon("exclamation-triangle"), " ", reason,
+        actionButton("btn_update_cache", "Update Now",
+                     class = "btn-sm btn-warning pull-right")
+      )
+    }
+  })
+
+  # --- Cache update button handler ---
+  observeEvent(input$btn_update_cache, {
+    req(rv$cache_manager)
+    withProgress(message = "Updating gene set cache...", value = 0, {
+      rv$cache_manager$build_cache(progress_callback = function(db, i, total) {
+        incProgress(1 / total, detail = db)
+      })
+    })
+    rv$cache_update_info <- rv$cache_manager$check_for_updates()
+    showNotification("Gene set cache updated!", type = "message", duration = 5)
+    add_log("Gene set cache updated.")
+  })
 
   # --- shinyFiles: 文件选择器初始化 ---
   # 使用普通环境变量存储上次目录 (shinyFileChoose 的 roots 回调不在 reactive 上下文中)
@@ -1285,14 +1364,14 @@ server <- function(input, output, session) {
 
           # [修复] 安全检查 sig_results 是否存在且有数据
           if(!is.null(dt$sig_results) && nrow(dt$sig_results) > 0) {
-            et <- EnrichmentAnalyst$new(); sig_genes <- dt$sig_results$Protein
+            et <- EnrichmentAnalyst$new(rv$cache_manager); sig_genes <- dt$sig_results$Protein
             et$ora_up <- et$run_comprehensive_ora(sig_genes, rownames(rv$manager$imputed_se), input$param_enrich_pval)
             rv$enrich_tool <- et; write_rds(et, file.path(full_res_dir, "enrich_tool.rds"))
           }
-          if(input$run_gsva) { gt <- ProteomicsGSVA$new(rv$manager); gt$run_gsva(dbs = c("GOBP", "GOMF", "GOCC", "KEGG", "Wiki")); rv$gsva_tool <- gt; write_rds(gt, file.path(full_res_dir, "gsva_tool.rds")) }
+          if(input$run_gsva) { gt <- ProteomicsGSVA$new(rv$manager, cache_manager = rv$cache_manager); gt$run_gsva(dbs = c("GOBP", "GOMF", "GOCC", "KEGG", "Wiki")); rv$gsva_tool <- gt; write_rds(gt, file.path(full_res_dir, "gsva_tool.rds")) }
         } else {
           paired_col_val <- if(!is.null(input$sel_paired_col) && input$sel_paired_col != "None") input$sel_paired_col else NULL
-          res_objs <- run_proteomics_pipeline(data_manager = rv$manager, analysis_type = input$analysis_mode, condition_col = input$sel_condition_col, control_group = input$sel_control, case_group = input$sel_case, continuous_col = if(input$analysis_mode == "continuous") input$sel_condition_col else NULL, covariates = if(length(input$sel_covariates)==0) NULL else input$sel_covariates, paired_col = paired_col_val, results_dir = rv$cache_root, sub_folder_name = final_sub_folder, pval_cutoff = input$param_pval, enrich_pval_cutoff = input$param_enrich_pval, logfc_cutoff = input$param_logfc, corr_cutoff = input$param_corr, r2_cutoff = input$param_r2, top_n_labels = 10, use_adj_pval_sig = input$param_use_adj, run_gsva = input$run_gsva, gsva_dbs = c("GOBP", "GOMF", "GOCC", "KEGG", "Wiki", "Reactome"))
+          res_objs <- run_proteomics_pipeline(data_manager = rv$manager, analysis_type = input$analysis_mode, condition_col = input$sel_condition_col, control_group = input$sel_control, case_group = input$sel_case, continuous_col = if(input$analysis_mode == "continuous") input$sel_condition_col else NULL, covariates = if(length(input$sel_covariates)==0) NULL else input$sel_covariates, paired_col = paired_col_val, results_dir = rv$cache_root, sub_folder_name = final_sub_folder, pval_cutoff = input$param_pval, enrich_pval_cutoff = input$param_enrich_pval, logfc_cutoff = input$param_logfc, corr_cutoff = input$param_corr, r2_cutoff = input$param_r2, top_n_labels = 10, use_adj_pval_sig = input$param_use_adj, run_gsva = input$run_gsva, gsva_dbs = c("GOBP", "GOMF", "GOCC", "KEGG", "Wiki", "Reactome"), cache_manager = rv$cache_manager)
           rv$diff_tool <- res_objs$diff_tool; rv$enrich_tool <- res_objs$enrich_tool; rv$gsva_tool <- res_objs$gsva_tool
         }
       })

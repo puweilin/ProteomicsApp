@@ -62,7 +62,10 @@ run_proteomics_pipeline <- function(data_manager,
                                     gsva_cont_method = "spearman",
                                     gsva_min_size = 10,
                                     gsva_max_size = 500,
-                                    gsva_adjusted = TRUE
+                                    gsva_adjusted = TRUE,
+
+                                    # --- Cache manager ---
+                                    cache_manager = NULL
                                     ) {
 
   require(here)
@@ -184,7 +187,7 @@ run_proteomics_pipeline <- function(data_manager,
     if (!dir.exists(gsea_dir)) dir.create(gsea_dir, recursive = TRUE)
 
     if (length(sig_proteins) > 0) {
-      enrich_tool <- EnrichmentAnalyst$new()
+      enrich_tool <- EnrichmentAnalyst$new(cache_manager)
 
       # 运行 DiffExpAnalyst 对象分析
       enrich_results <- enrich_tool$analyze_diff_obj(diff_tool, pval_cutoff = enrich_pval_cutoff)
@@ -217,7 +220,7 @@ run_proteomics_pipeline <- function(data_manager,
     if (!dir.exists(gsva_plots_dir)) dir.create(gsva_plots_dir, recursive = TRUE)
 
     # 初始化 GSVA 工具
-    gsva_tool <- ProteomicsGSVA$new(data_manager)
+    gsva_tool <- ProteomicsGSVA$new(data_manager, cache_manager = cache_manager)
 
     # 6.1 运行 GSVA (所有指定数据库)
     message(paste("  Running GSVA for databases:", paste(gsva_dbs, collapse = ", ")))

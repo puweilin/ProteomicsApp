@@ -19,18 +19,20 @@ ProteomicsGSVA <- R6Class("ProteomicsGSVA",
   public = list(
     # --- 核心数据存储 ---
     data_manager = NULL,          # ProteomicsDataManager对象
+    cache_manager = NULL,         # GeneSetCacheManager对象
     gsva_matrices = NULL,         # GSVA打分矩阵列表 (每个DB一个matrix)
     gsva_results = NULL,          # 差异分析结果列表 (每个DB一个data.frame)
     diff_pathways = NULL,         # 显著差异通路列表 (每个DB一个data.frame)
     pathway_genesets = NULL,      # 基因集列表 (每个DB一个list)
 
     # --- 初始化 ---
-    initialize = function(data_manager, organism = "hsa") {
+    initialize = function(data_manager, organism = "hsa", cache_manager = NULL) {
       # 检查 data_manager 是否为 R6 类 (简单的 check)
       if (!"ProteomicsDataManager" %in% class(data_manager)) {
         stop("data_manager must be a ProteomicsDataManager object")
       }
       self$data_manager <- data_manager
+      self$cache_manager <- cache_manager
       self$gsva_matrices <- list()
       self$gsva_results <- list()
       self$diff_pathways <- list()
@@ -39,89 +41,99 @@ ProteomicsGSVA <- R6Class("ProteomicsGSVA",
       message("ProteomicsGSVA initialized successfully.")
     },
 
-# --- 功能1: 构建单个数据库的基因集 (KEGG=Online, Others=MSigDB) ---
+# --- 功能1: 构建单个数据库的基因集 (prefer cache, fallback to online) ---
     prepare_geneset = function(db = "GOBP", min_size = 10, max_size = 500) {
       message(paste("--- Preparing gene sets for:", db, "---"))
       gs_list <- list()
 
+      # Mapping from GSVA db keys to cache keys
+      gsva_to_cache_key <- c(GOBP="GO_BP", GOMF="GO_MF", GOCC="GO_CC",
+                             KEGG="KEGG", Wiki="Wiki", Reactome="Reactome")
+
       tryCatch({
-        
-        # >>> 1. KEGG: 强制使用在线 API (KEGGREST) <<<
-        if (db == "KEGG") {
-          message("  [Online] Fetching latest KEGG pathways from API (KEGGREST)...")
-          
-          # 检查必要依赖
-          if (!requireNamespace("KEGGREST", quietly = TRUE)) {
-             stop("Package 'KEGGREST' is required for online KEGG analysis. Please install it using BiocManager::install('KEGGREST').")
-          }
-          if (!requireNamespace("org.Hs.eg.db", quietly = TRUE)) {
-             stop("Package 'org.Hs.eg.db' is required for ID conversion.")
-          }
-          
-          # 1.1 下载数据 (网络请求)
-          # 获取 通路ID -> 基因ID (Entrez)
-          link_data <- KEGGREST::keggLink("pathway", "hsa") 
-          # 获取 通路ID -> 通路名称
-          name_data <- KEGGREST::keggList("pathway", "hsa") 
-          
-          if(length(link_data) == 0 || length(name_data) == 0) {
-            stop("Failed to fetch data from KEGG API. Please check your internet connection.")
+        cache_key <- gsva_to_cache_key[db]
+
+        # Try cache first
+        if (!is.null(self$cache_manager) &&
+            !is.null(cache_key) && !is.na(cache_key) &&
+            self$cache_manager$is_cache_exists()) {
+
+          message("  [Cache] Loading gene sets from local cache...")
+          cached <- self$cache_manager$get_term2gene(cache_key)
+          gs_list <- split(cached$TERM2GENE$gene, cached$TERM2GENE$term)
+
+          # Rename gene sets from IDs to human-readable descriptions
+          # (e.g., "GO:0006915" -> "apoptotic process")
+          if (!is.null(cached$TERM2NAME) && nrow(cached$TERM2NAME) > 0) {
+            id_to_name <- setNames(cached$TERM2NAME$name, cached$TERM2NAME$term)
+            old_names <- names(gs_list)
+            new_names <- ifelse(old_names %in% names(id_to_name),
+                                id_to_name[old_names], old_names)
+            names(gs_list) <- new_names
           }
 
-          # 1.2 数据清洗
-          # 去除前缀 (hsa:123 -> 123, path:hsa001 -> hsa001)
-          gene_ids <- gsub("hsa:", "", names(link_data))
-          path_ids <- gsub("path:", "", unname(link_data))
-          
-          # 1.3 ID 转换: Entrez ID -> Gene Symbol
-          message("  Mapping Entrez IDs to Gene Symbols...")
-          gene_map <- clusterProfiler::bitr(unique(gene_ids), 
-                                            fromType = "ENTREZID", 
-                                            toType = "SYMBOL", 
-                                            OrgDb = "org.Hs.eg.db")
-          
-          # 1.4 构建列表
-          df_map <- data.frame(ENTREZID = gene_ids, PathwayID = path_ids) %>%
-            inner_join(gene_map, by = "ENTREZID") %>% # 仅保留能转为 Symbol 的基因
-            mutate(PathwayName = name_data[PathwayID]) 
-          
-          # 清洗通路名称 (去除 " - Homo sapiens (human)")
-          df_map$PathwayName <- gsub(" - Homo sapiens \\(human\\)", "", df_map$PathwayName)
-          df_map$PathwayName <- trimws(df_map$PathwayName) # 去除可能残留的空格
-          
-          # 生成列表
-          gs_list <- split(df_map$SYMBOL, df_map$PathwayName)
-          
         } else {
-          # >>> 2. 其他数据库 (GO, Wiki, Reactome): 使用本地 MSigDB <<<
-          # 这里不再包含 KEGG 的旧版逻辑
-          
-          df <- NULL
-          if (db == "GOBP") {
-            message("  Loading GO BP gene sets (MSigDB)...")
-            df <- msigdbr(species = "Homo sapiens", category = "C5") %>% dplyr::filter(gs_subcat == "GO:BP")
-          } else if (db == "GOMF") {
-            message("  Loading GO MF gene sets (MSigDB)...")
-            df <- msigdbr(species = "Homo sapiens", category = "C5") %>% dplyr::filter(gs_subcat == "GO:MF")
-          } else if (db == "GOCC") {
-            message("  Loading GO CC gene sets (MSigDB)...")
-            df <- msigdbr(species = "Homo sapiens", category = "C5") %>% dplyr::filter(gs_subcat == "GO:CC")
-          } else if (db == "Wiki") {
-            message("  Loading Wiki Pathways (MSigDB)...")
-            df <- msigdbr(species = "Homo sapiens", category = "C2") %>% dplyr::filter(gs_subcat == "CP:WIKIPATHWAYS")
-          } else if (db == "Reactome") {
-            message("  Loading Reactome pathways (MSigDB)...")
-            df <- msigdbr(species = "Homo sapiens", category = "C2") %>% dplyr::filter(gs_subcat == "CP:REACTOME")
-          }
-          
-          if (!is.null(df) && nrow(df) > 0) {
-            gs_list <- split(df$gene_symbol, df$gs_name)
+          # Fallback: online fetch (original logic)
+          message("  [Online] Cache not available, fetching online...")
+
+          if (db == "KEGG") {
+            message("  [Online] Fetching latest KEGG pathways from API (KEGGREST)...")
+
+            if (!requireNamespace("KEGGREST", quietly = TRUE)) {
+               stop("Package 'KEGGREST' is required for online KEGG analysis.")
+            }
+            if (!requireNamespace("org.Hs.eg.db", quietly = TRUE)) {
+               stop("Package 'org.Hs.eg.db' is required for ID conversion.")
+            }
+
+            link_data <- KEGGREST::keggLink("pathway", "hsa")
+            name_data <- KEGGREST::keggList("pathway", "hsa")
+
+            if(length(link_data) == 0 || length(name_data) == 0) {
+              stop("Failed to fetch data from KEGG API.")
+            }
+
+            gene_ids <- gsub("hsa:", "", names(link_data))
+            path_ids <- gsub("path:", "", unname(link_data))
+
+            message("  Mapping Entrez IDs to Gene Symbols...")
+            gene_map <- clusterProfiler::bitr(unique(gene_ids),
+                                              fromType = "ENTREZID",
+                                              toType = "SYMBOL",
+                                              OrgDb = "org.Hs.eg.db")
+
+            df_map <- data.frame(ENTREZID = gene_ids, PathwayID = path_ids) %>%
+              inner_join(gene_map, by = "ENTREZID") %>%
+              mutate(PathwayName = name_data[PathwayID])
+
+            df_map$PathwayName <- gsub(" - Homo sapiens \\(human\\)", "", df_map$PathwayName)
+            df_map$PathwayName <- trimws(df_map$PathwayName)
+
+            gs_list <- split(df_map$SYMBOL, df_map$PathwayName)
+
+          } else {
+            df <- NULL
+            if (db == "GOBP") {
+              df <- msigdbr(species = "Homo sapiens", category = "C5") %>% dplyr::filter(gs_subcat == "GO:BP")
+            } else if (db == "GOMF") {
+              df <- msigdbr(species = "Homo sapiens", category = "C5") %>% dplyr::filter(gs_subcat == "GO:MF")
+            } else if (db == "GOCC") {
+              df <- msigdbr(species = "Homo sapiens", category = "C5") %>% dplyr::filter(gs_subcat == "GO:CC")
+            } else if (db == "Wiki") {
+              df <- msigdbr(species = "Homo sapiens", category = "C2") %>% dplyr::filter(gs_subcat == "CP:WIKIPATHWAYS")
+            } else if (db == "Reactome") {
+              df <- msigdbr(species = "Homo sapiens", category = "C2") %>% dplyr::filter(gs_subcat == "CP:REACTOME")
+            }
+
+            if (!is.null(df) && nrow(df) > 0) {
+              gs_list <- split(df$gene_symbol, df$gs_name)
+            }
           }
         }
 
-        # >>> 3. 公共后处理: 去重与大小过滤 <<<
+        # Post-processing: deduplicate and filter by size
         if (length(gs_list) > 0) {
-          gs_list <- lapply(gs_list, unique) # 确保基因不重复
+          gs_list <- lapply(gs_list, unique)
           lens <- lengths(gs_list)
           gs_list <- gs_list[lens >= min_size & lens <= max_size]
           message(paste("  Loaded", length(gs_list), "gene sets for", db))

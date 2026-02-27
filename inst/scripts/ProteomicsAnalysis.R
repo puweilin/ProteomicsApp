@@ -1289,10 +1289,10 @@ MfuzzClusterer <- R6Class("MfuzzClusterer",
     cl_obj = NULL,
     enrich_worker = NULL,
     
-    initialize = function(se_object, org_db = "org.Hs.eg.db") {
+    initialize = function(se_object, cache_manager = NULL) {
       self$se_obj <- se_object
       # 组合模式：MfuzzClusterer "拥有" 一个 EnrichmentAnalyst
-      self$enrich_worker <- EnrichmentAnalyst$new(org_db)
+      self$enrich_worker <- EnrichmentAnalyst$new(cache_manager)
     },
     
     run_mfuzz = function(sig_prots, time_col = "time_num", centers = 4) {
@@ -1423,116 +1423,76 @@ MfuzzClusterer <- R6Class("MfuzzClusterer",
 )
 
 
-# --- Class 4: 富集分析封装 ---
+# --- Class 4: 富集分析封装 (Cache-based: enricher / GSEA) ---
 EnrichmentAnalyst <- R6Class("EnrichmentAnalyst",
   public = list(
-    organism_db = NULL,
+    cache_manager = NULL,
     ora_up = NULL,
     ora_down = NULL,
     gsea_res = NULL,
 
-
-    initialize = function(org_db = "org.Hs.eg.db") {
-      self$organism_db <- org_db
-    },
-    
-    # 静态辅助方法：ID 转换
-    convert_to_entrez = function(gene_symbols) {
-      fix_map <- c(
-        "GATD3B" = "GATD3",
-        "SMAP" = "KIFAP3",
-        "MT-CYB" = "CYTB",
-        "MT-CO1" = "COX1",
-        "MT-CO2" = "COX2",
-        "MT-CO3" = "COX3",
-        "MT-ND1" = "ND1",
-        "MT-ND2" = "ND2",
-        "MT-ND3" = "ND3",
-        "MT-ND4" = "ND4",
-        "MT-ND5" = "ND5",
-        "MT-ATP8" = "ATP8",
-        "PRPF4B" = "PRP4K",
-        "BAP18" = "BACC1",
-        "KCT2" = "C5orf15",
-        "CUSTOS" = "C12orf43",
-        "SARG" = "C1orf116",
-        "IMUP" = "C19orf33",
-        "C12orf4" = "FERRY3",
-        "BARGIN" = "SH3BP1",
-        "NMES1" = "COXFA4L3"
-
-        )
-      
-      genes_fixed <- gene_symbols
-      for(old_name in names(fix_map)) {
-        genes_fixed[genes_fixed == old_name] <- fix_map[old_name]
+    initialize = function(cache_manager = NULL) {
+      if (is.null(cache_manager)) {
+        cache_manager <- GeneSetCacheManager$new()
       }
-
-      bitr(genes_fixed, fromType = "SYMBOL", toType = "ENTREZID", OrgDb = self$organism_db)$ENTREZID
+      self$cache_manager <- cache_manager
     },
-    
-    # 综合 ORA 分析 (Top 10 上下调)
-    run_comprehensive_ora = function(gene_list, universe_genes, pval_cutoff, padjust_method = "none", qval_cutoff = 1) {
-      # gene_list: 字符向量 (Gene Symbols)
-      
-      entrez_ids <- self$convert_to_entrez(gene_list)
-      universe_entrez <- self$convert_to_entrez(universe_genes)
-      
+
+    # Comprehensive ORA using cached TERM2GENE + enricher()
+    run_comprehensive_ora = function(gene_list, universe_genes, pval_cutoff,
+                                     padjust_method = "none", qval_cutoff = 1) {
+      dbs <- c("GO_BP", "GO_MF", "GO_CC", "KEGG", "Reactome", "Wiki")
       res_list <- list()
-      
-      # 1. GO (BP, MF, CC)
-      for (ont in c("BP", "MF", "CC")) {
-        res_list[[paste0("GO_", ont)]] <- enrichGO(
-          gene = entrez_ids, universe = universe_entrez, OrgDb = self$organism_db,
-          ont = ont, readable = TRUE, pvalueCutoff = pval_cutoff, pAdjustMethod = padjust_method, qvalueCutoff = qval_cutoff)
-      }
-      
-      # 2. KEGG
-      res_list[["KEGG"]] <- enrichKEGG(gene = entrez_ids, organism = "hsa", universe = universe_entrez, 
-        pvalueCutoff = pval_cutoff, pAdjustMethod = padjust_method, qvalueCutoff = qval_cutoff) 
 
-      # SetReadable later
-      if (!is.null(res_list[["KEGG"]])) {
-      res_list[["KEGG"]] <- setReadable(res_list[["KEGG"]], OrgDb = org.Hs.eg.db, keyType = "ENTREZID")
-      }
-
-
-      # 3. Reactome
-      res_list[["Reactome"]] <- enrichPathway(gene = entrez_ids, organism = "human", universe = universe_entrez, readable = TRUE, 
-        pvalueCutoff = pval_cutoff, pAdjustMethod = padjust_method, qvalueCutoff = qval_cutoff)
-
-      
-      # 4. Wiki (Need logical check if installed, skip if not)
-       res_list[["Wiki"]] <- enrichWP(gene = entrez_ids, universe = universe_entrez, organism = "Homo sapiens", 
-        pvalueCutoff = pval_cutoff, pAdjustMethod = padjust_method, qvalueCutoff = qval_cutoff) 
-    
-      if (!is.null(res_list[["Wiki"]])) {
-        res_list[["Wiki"]] <- setReadable(res_list[["Wiki"]], OrgDb = org.Hs.eg.db, keyType = "ENTREZID")
+      for (db in dbs) {
+        tryCatch({
+          cached <- self$cache_manager$get_term2gene(db)
+          res_list[[db]] <- clusterProfiler::enricher(
+            gene         = gene_list,
+            universe     = universe_genes,
+            TERM2GENE    = cached$TERM2GENE,
+            TERM2NAME    = cached$TERM2NAME,
+            pvalueCutoff = pval_cutoff,
+            pAdjustMethod = padjust_method,
+            qvalueCutoff = qval_cutoff,
+            minGSSize    = 10,
+            maxGSSize    = 500
+          )
+        }, error = function(e) {
+          message("  ORA failed for ", db, ": ", e$message)
+          res_list[[db]] <<- NULL
+        })
       }
 
       return(res_list)
     },
-    
-    # GSEA 分析
-    run_comprehensive_gsea = function(ranked_gene_list, pval_cutoff, padjust_method = "none") {
-      # ranked_gene_list: named vector (names=Symbol, values=stat/logFC), sorted desc
-      
-      ids <- bitr(names(ranked_gene_list), fromType="SYMBOL", toType="ENTREZID", OrgDb=self$organism_db)
-      # Merge LogFC
-      df_merge <- data.frame(SYMBOL = names(ranked_gene_list), val = ranked_gene_list) %>%
-        inner_join(ids, by="SYMBOL") %>%
-        arrange(desc(val))
-      
-      gene_vec <- df_merge$val
-      names(gene_vec) <- df_merge$ENTREZID
-      
+
+    # Comprehensive GSEA using cached TERM2GENE + GSEA()
+    run_comprehensive_gsea = function(ranked_gene_list, pval_cutoff,
+                                      padjust_method = "none") {
+      # ranked_gene_list: named numeric vector (names=Symbol, values=logFC),
+      #                   sorted descending
+      dbs <- c("GO_BP", "GO_MF", "GO_CC", "KEGG", "Reactome", "Wiki")
       gsea_res <- list()
-      gsea_res[["GO_BP"]] <- gseGO(gene_vec, OrgDb=self$organism_db, ont="BP", pvalueCutoff = pval_cutoff, pAdjustMethod = padjust_method, minGSSize = 10, maxGSSize = 500, seed=123)
-      gsea_res[["GO_MF"]] <- gseGO(gene_vec, OrgDb=self$organism_db, ont="MF", pvalueCutoff = pval_cutoff, pAdjustMethod = padjust_method, minGSSize = 10, maxGSSize = 500, seed=123)
-      gsea_res[["GO_CC"]] <- gseGO(gene_vec, OrgDb=self$organism_db, ont="CC", pvalueCutoff = pval_cutoff, pAdjustMethod = padjust_method, minGSSize = 10, maxGSSize = 500, seed=123)
-      gsea_res[["Wiki"]] <-  gseWP(gene_vec, organism = "Homo sapiens", pvalueCutoff = pval_cutoff, pAdjustMethod = padjust_method, minGSSize = 10, seed = 123)
-      gsea_res[["KEGG"]] <- gseKEGG(gene_vec, organism="hsa", pvalueCutoff = pval_cutoff, pAdjustMethod = padjust_method, minGSSize = 10, seed=123)
-      gsea_res[["Reactome"]] <- gsePathway(gene_vec, organism="human", pvalueCutoff = pval_cutoff, pAdjustMethod = padjust_method, minGSSize = 10, seed=123)
+
+      for (db in dbs) {
+        tryCatch({
+          cached <- self$cache_manager$get_term2gene(db)
+          gsea_res[[db]] <- clusterProfiler::GSEA(
+            geneList      = ranked_gene_list,
+            TERM2GENE     = cached$TERM2GENE,
+            TERM2NAME     = cached$TERM2NAME,
+            pvalueCutoff  = pval_cutoff,
+            pAdjustMethod = padjust_method,
+            minGSSize     = 10,
+            maxGSSize     = 500,
+            seed          = 123
+          )
+        }, error = function(e) {
+          message("  GSEA failed for ", db, ": ", e$message)
+          gsea_res[[db]] <<- NULL
+        })
+      }
 
       return(gsea_res)
     },
@@ -1540,13 +1500,13 @@ EnrichmentAnalyst <- R6Class("EnrichmentAnalyst",
     # --- 业务逻辑: 处理 DiffExpAnalyst 对象 ---
     analyze_diff_obj = function(diff_obj, pval_cutoff = 1) {
       if(is.null(diff_obj$sig_results) || is.null(diff_obj$diff_results)) stop("Run DE analysis first.")
-      
+
       message("=== EnrichmentAnalyst: Processing DiffExp Object ===")
-      
+
       # 1. 提取数据
       universe <- diff_obj$diff_results$Protein
       sig_df <- diff_obj$sig_results
-      
+
       # 2. 区分上下调
       if ("logFC" %in% colnames(sig_df)) {
         up_genes <- sig_df %>% filter(logFC > 0) %>% pull(Protein)
@@ -1557,13 +1517,14 @@ EnrichmentAnalyst <- R6Class("EnrichmentAnalyst",
         down_genes <- sig_df %>% filter(spearman_rho < 0) %>% pull(Protein)
         rank_vec <- setNames(diff_obj$diff_results$spearman_rho, diff_obj$diff_results$Protein)
       }
-      
-      # 3. 运行 ORA
+
+      # 3. 运行 ORA (uses gene symbols directly via cached TERM2GENE)
       self$ora_up <- self$run_comprehensive_ora(up_genes, universe, pval_cutoff = pval_cutoff)
       self$ora_down <- self$run_comprehensive_ora(down_genes, universe, pval_cutoff = pval_cutoff)
-      
-      # 4. 运行 GSEA
-      self$gsea_res <- self$run_comprehensive_gsea(sort(rank_vec, decreasing = TRUE), pval_cutoff = pval_cutoff)      
+
+      # 4. 运行 GSEA (uses gene symbols directly)
+      rank_vec <- sort(rank_vec, decreasing = TRUE)
+      self$gsea_res <- self$run_comprehensive_gsea(rank_vec, pval_cutoff = pval_cutoff)
       message("DiffExp Enrichment Done.")
     },
 

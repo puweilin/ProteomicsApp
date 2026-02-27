@@ -60,7 +60,8 @@ cat("步骤 4/4: 安装 Bioconductor 依赖包...\n")
 bioc_packages <- c(
   "DEP", "SummarizedExperiment", "limma",
   "clusterProfiler", "enrichplot", "org.Hs.eg.db", "ReactomePA",
-  "Mfuzz", "ComplexHeatmap", "GSVA", "GSEABase"
+  "Mfuzz", "ComplexHeatmap", "GSVA", "GSEABase", "KEGGREST",
+  "GO.db", "reactome.db"
 )
 
 missing_bioc <- bioc_packages[!sapply(bioc_packages, requireNamespace, quietly = TRUE)]
