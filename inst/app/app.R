@@ -449,6 +449,9 @@ ui <- navbarPage(
                           h4("Gene Set Database"),
                           uiOutput("ui_cache_status"),
                           uiOutput("ui_cache_update_banner"),
+                          actionButton("btn_rebuild_cache", "Rebuild Cache",
+                                       icon = icon("refresh"), class = "btn-sm btn-default",
+                                       width = "100%"),
 
                           hr(),
                           actionButton("btn_run_pipeline", "Run New Analysis", icon = icon("rocket"), class = "btn-danger", width = "100%"),
@@ -590,6 +593,40 @@ server <- function(input, output, session) {
     rv$cache_update_info <- rv$cache_manager$check_for_updates()
     showNotification("Gene set cache updated!", type = "message", duration = 5)
     add_log("Gene set cache updated.")
+  })
+
+  # --- Cache rebuild button handler (clear + rebuild) ---
+  observeEvent(input$btn_rebuild_cache, {
+    req(rv$cache_manager)
+    showModal(modalDialog(
+      title = "Rebuild Gene Set Cache",
+      "This will delete the existing cache and rebuild from scratch. Continue?",
+      footer = tagList(
+        modalButton("Cancel"),
+        actionButton("btn_rebuild_confirm", "Rebuild", class = "btn-danger")
+      )
+    ))
+  })
+
+  observeEvent(input$btn_rebuild_confirm, {
+    removeModal()
+    req(rv$cache_manager)
+    # Delete existing cache
+    if (dir.exists(rv$cache_manager$cache_dir)) {
+      unlink(rv$cache_manager$cache_dir, recursive = TRUE)
+      dir.create(rv$cache_manager$cache_dir, recursive = TRUE)
+      rv$cache_manager$cache_metadata <- NULL
+      add_log("Gene set cache cleared.")
+    }
+    # Rebuild
+    withProgress(message = "Rebuilding gene set cache...", value = 0, {
+      rv$cache_manager$build_cache(progress_callback = function(db, i, total) {
+        incProgress(1 / total, detail = db)
+      })
+    })
+    rv$cache_update_info <- rv$cache_manager$check_for_updates()
+    showNotification("Gene set cache rebuilt!", type = "message", duration = 5)
+    add_log("Gene set cache rebuilt from scratch.")
   })
 
   # --- shinyFiles: 文件选择器初始化 ---
