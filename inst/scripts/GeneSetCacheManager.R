@@ -266,6 +266,64 @@ GeneSetCacheManager <- R6Class("GeneSetCacheManager",
       cleaned
     },
 
+    # Download WikiPathways GMT from data.wikipathways.org (~340KB).
+    # Returns data.frame(pathway_name, gene_symbol).
+    download_wikipathways_gmt = function() {
+      # 1. Scrape the directory to find the dated GMT filename
+      dir_url <- "https://data.wikipathways.org/current/gmt/"
+      html <- paste(readLines(url(dir_url, method = "libcurl"), warn = FALSE),
+                    collapse = "\n")
+      gmt_files <- regmatches(html, gregexpr("wikipathways[^\">]+Homo_sapiens[.]gmt", html))
+      gmt_files <- unique(unlist(gmt_files))
+      if (length(gmt_files) == 0) {
+        stop("No human GMT file found at ", dir_url)
+      }
+      gmt_file <- gmt_files[1]
+      gmt_url <- paste0(dir_url, gmt_file)
+      message("  Downloading: ", gmt_url)
+
+      # 2. Download GMT file
+      tmp <- tempfile(fileext = ".gmt")
+      download.file(gmt_url, tmp, quiet = TRUE, method = "libcurl")
+      if (file.size(tmp) < 100) {
+        stop("Downloaded GMT file is too small (", file.size(tmp), " bytes)")
+      }
+      lines <- readLines(tmp, warn = FALSE)
+      message("  Downloaded ", length(lines), " pathways")
+
+      # 3. Parse GMT: each line = name%db%wpid%species \t url \t entrez1 \t entrez2 ...
+      records <- lapply(lines, function(line) {
+        fields <- strsplit(line, "\t")[[1]]
+        if (length(fields) < 3) return(NULL)
+        # Extract clean pathway name from "Name%WikiPathways_YYYYMMDD%WPXXX%Homo sapiens"
+        raw_name <- fields[1]
+        pw_name <- sub("%.*", "", raw_name)
+        genes <- fields[-(1:2)]
+        genes <- genes[genes != ""]
+        if (length(genes) == 0) return(NULL)
+        data.frame(pathway_name = pw_name, ENTREZID = genes,
+                   stringsAsFactors = FALSE)
+      })
+      df_entrez <- do.call(rbind, records)
+      message("  Parsed ", nrow(df_entrez), " gene-pathway pairs (Entrez IDs)")
+
+      # 4. Convert Entrez -> Symbol
+      gene_map <- clusterProfiler::bitr(
+        unique(df_entrez$ENTREZID),
+        fromType = "ENTREZID",
+        toType   = "SYMBOL",
+        OrgDb    = "org.Hs.eg.db"
+      )
+      df_merged <- merge(df_entrez, gene_map, by = "ENTREZID")
+      message("  Converted to ", nrow(df_merged), " gene-pathway pairs (symbols)")
+
+      data.frame(
+        pathway_name = df_merged$pathway_name,
+        gene_symbol  = df_merged$SYMBOL,
+        stringsAsFactors = FALSE
+      )
+    },
+
     # Build TERM2GENE + TERM2NAME for a single database
     build_single_db = function(db) {
       TERM2GENE <- NULL
@@ -395,42 +453,68 @@ GeneSetCacheManager <- R6Class("GeneSetCacheManager",
 
       } else if (db == "Wiki") {
         # =============================================================
-        # WikiPathways via msigdbr (C2:CP:WIKIPATHWAYS)
-        # enrichWP online API is broken (WikiPathways GMT returns 404),
-        # so msigdbr is the best available offline source.
-        # Falls back to bundled RDS if msigdbr download (Zenodo) fails.
+        # WikiPathways — 3-tier data source:
+        #   1. WikiPathways GMT direct download (~340KB, most current)
+        #   2. msigdbr (34MB Zenodo download, may timeout in China)
+        #   3. Bundled RDS fallback (no network, may be outdated)
         # =============================================================
-        message("  Building WikiPathways from msigdbr...")
+        df <- NULL
+
+        # --- Tier 1: WikiPathways GMT direct download ---
         df <- tryCatch({
-          raw <- msigdbr::msigdbr(species = "Homo sapiens", category = "C2")
-          raw[raw$gs_subcat == "CP:WIKIPATHWAYS", c("gs_name", "gene_symbol")]
+          message("  [Tier 1] Downloading WikiPathways GMT (data.wikipathways.org)...")
+          private$download_wikipathways_gmt()
         }, error = function(e) {
-          message("  msigdbr download failed (", e$message,
-                  "), using bundled WikiPathways data...")
-          # Fallback: bundled RDS shipped with the package
+          message("  Tier 1 failed: ", e$message)
+          NULL
+        })
+
+        # --- Tier 2: msigdbr (Zenodo) ---
+        if (is.null(df)) {
+          df <- tryCatch({
+            message("  [Tier 2] Trying msigdbr (Zenodo)...")
+            raw <- msigdbr::msigdbr(species = "Homo sapiens", category = "C2")
+            raw <- raw[raw$gs_subcat == "CP:WIKIPATHWAYS", c("gs_name", "gene_symbol")]
+            # Convert msigdbr format to match GMT format
+            data.frame(
+              pathway_name = private$clean_msigdbr_name(raw$gs_name, "WP"),
+              gene_symbol  = raw$gene_symbol,
+              stringsAsFactors = FALSE
+            )
+          }, error = function(e) {
+            message("  Tier 2 failed: ", e$message)
+            NULL
+          })
+        }
+
+        # --- Tier 3: Bundled RDS fallback ---
+        if (is.null(df)) {
+          message("  [Tier 3] Using bundled WikiPathways data...")
           fallback <- system.file("extdata", "wikipathways_msigdb.rds",
                                   package = "ProteomicsApp")
           if (fallback == "") {
-            # Not installed as package — try relative path
             fallback <- file.path("inst", "extdata", "wikipathways_msigdb.rds")
           }
           if (file.exists(fallback)) {
-            readRDS(fallback)
+            raw <- readRDS(fallback)
+            df <- data.frame(
+              pathway_name = private$clean_msigdbr_name(raw$gs_name, "WP"),
+              gene_symbol  = raw$gene_symbol,
+              stringsAsFactors = FALSE
+            )
           } else {
-            stop("Neither msigdbr nor bundled WikiPathways data available.")
+            stop("All WikiPathways data sources failed.")
           }
-        })
-
-        readable <- private$clean_msigdbr_name(df$gs_name, "WP")
+        }
 
         TERM2GENE <- data.frame(
-          term = readable,
+          term = df$pathway_name,
           gene = df$gene_symbol,
           stringsAsFactors = FALSE
         )
         TERM2NAME <- unique(data.frame(
-          term = readable,
-          name = readable,
+          term = df$pathway_name,
+          name = df$pathway_name,
           stringsAsFactors = FALSE
         ))
 
