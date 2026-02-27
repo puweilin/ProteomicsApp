@@ -532,7 +532,7 @@ server <- function(input, output, session) {
       # First time: build cache with progress modal
       showModal(modalDialog(
         title = "Building Gene Set Cache",
-        "Building gene set cache for first use. This requires internet access and may take a few minutes...",
+        "Building gene set cache for first use. KEGG requires internet access. This may take a few minutes...",
         footer = NULL
       ))
       tryCatch({

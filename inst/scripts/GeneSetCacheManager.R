@@ -398,10 +398,28 @@ GeneSetCacheManager <- R6Class("GeneSetCacheManager",
         # WikiPathways via msigdbr (C2:CP:WIKIPATHWAYS)
         # enrichWP online API is broken (WikiPathways GMT returns 404),
         # so msigdbr is the best available offline source.
+        # Falls back to bundled RDS if msigdbr download (Zenodo) fails.
         # =============================================================
         message("  Building WikiPathways from msigdbr...")
-        df <- msigdbr::msigdbr(species = "Homo sapiens", category = "C2")
-        df <- df[df$gs_subcat == "CP:WIKIPATHWAYS", ]
+        df <- tryCatch({
+          raw <- msigdbr::msigdbr(species = "Homo sapiens", category = "C2")
+          raw[raw$gs_subcat == "CP:WIKIPATHWAYS", c("gs_name", "gene_symbol")]
+        }, error = function(e) {
+          message("  msigdbr download failed (", e$message,
+                  "), using bundled WikiPathways data...")
+          # Fallback: bundled RDS shipped with the package
+          fallback <- system.file("extdata", "wikipathways_msigdb.rds",
+                                  package = "ProteomicsApp")
+          if (fallback == "") {
+            # Not installed as package — try relative path
+            fallback <- file.path("inst", "extdata", "wikipathways_msigdb.rds")
+          }
+          if (file.exists(fallback)) {
+            readRDS(fallback)
+          } else {
+            stop("Neither msigdbr nor bundled WikiPathways data available.")
+          }
+        })
 
         readable <- private$clean_msigdbr_name(df$gs_name, "WP")
 
