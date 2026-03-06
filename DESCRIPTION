@@ -61,6 +61,8 @@ Imports:
     msigdbr,
     ComplexHeatmap,
     GSVA,
+    fgsea,
+    BiocParallel,
     GSEABase,
     KEGGREST,
     GO.db,
@@ -69,4 +71,5 @@ Suggests:
     testthat (>= 3.0.0),
     knitr,
     rmarkdown
+Config/testthat/edition: 3
 biocViews: Proteomics, DifferentialExpression, Visualization

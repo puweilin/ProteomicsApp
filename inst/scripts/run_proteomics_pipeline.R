@@ -1,47 +1,47 @@
-#' 运行完整的蛋白质组学差异与富集分析流程 (支持模块化运行)
+#' Run the complete proteomics differential and enrichment analysis pipeline (modular execution)
 #'
-#' @param data_manager 已经初始化的 ProteomicsDataManager 对象 (需包含 imputed_se)
-#' @param analysis_type 分析类型: "group" (默认) 或 "continuous"
-#' @param condition_col (Group模式) 分组列名
-#' @param control_group (Group模式) 对照组名称
-#' @param case_group (Group模式) 实验组名称
-#' @param continuous_col (Continuous模式) 连续变量列名 (如 "age", "time_num")
-#' @param continuous_method (Continuous模式) 回归方法: "spline" (默认) 或 "linear"
-#' @param covariates 协变量向量 (例如 "age")，默认为 NULL
-#' @param results_dir 结果输出的总根目录
-#' @param sub_folder_name (可选) 子文件夹名称。如果不填，会自动生成
-#' @param pval_cutoff P值阈值
-#' @param logfc_cutoff (Group模式) LogFC 阈值
-#' @param corr_cutoff (Continuous模式) Correlation (Spearman Rho) 阈值
-#' @param r2_cutoff (Continuous模式) R-squared 阈值
-#' @param use_adj_pval_sig (逻辑值) 筛选显著蛋白表时，是否使用校正后 P 值 (默认 TRUE)
-#' @param top_n_labels 火山图标注数量
-#' 
-#' @param run_diff [新增] 是否运行差异表达分析 (默认 TRUE)
-#' @param run_enrichment [新增] 是否运行富集分析 (默认 TRUE)
-#' @param run_gsva 是否运行GSVA分析 (默认 TRUE)
-#' 
-#' @param gsva_dbs 运行GSVA的数据库列表 (默认所有6种)
-#' @param gsva_min_size GSVA基因集最小基因数
-#' @param gsva_max_size GSVA基因集最大基因数
+#' @param data_manager Pre-initialized ProteomicsDataManager object (must contain imputed_se)
+#' @param analysis_type Analysis type: "group" (default) or "continuous"
+#' @param condition_col (Group mode) Group column name
+#' @param control_group (Group mode) Control group name
+#' @param case_group (Group mode) Case/treatment group name
+#' @param continuous_col (Continuous mode) Continuous variable column name (e.g., "age", "time_num")
+#' @param continuous_method (Continuous mode) Regression method: "spline" (default) or "linear"
+#' @param covariates Covariate vector (e.g., "age"), default NULL
+#' @param results_dir Root output directory for results
+#' @param sub_folder_name (Optional) Subfolder name. Auto-generated if not specified
+#' @param pval_cutoff P-value threshold
+#' @param logfc_cutoff (Group mode) LogFC threshold
+#' @param corr_cutoff (Continuous mode) Correlation (Spearman Rho) threshold
+#' @param r2_cutoff (Continuous mode) R-squared threshold
+#' @param use_adj_pval_sig (Logical) Whether to use adjusted p-value for significant protein filtering (default TRUE)
+#' @param top_n_labels Number of volcano plot labels
 #'
-#' @return 返回一个列表，包含 diff_tool, enrich_tool 和 gsva_tool 对象
+#' @param run_diff Whether to run differential expression analysis (default TRUE)
+#' @param run_enrichment Whether to run enrichment analysis (default TRUE)
+#' @param run_gsva Whether to run GSVA analysis (default TRUE)
+#'
+#' @param gsva_dbs Database list for GSVA (default: all 6 databases)
+#' @param gsva_min_size GSVA gene set minimum gene count
+#' @param gsva_max_size GSVA gene set maximum gene count
+#'
+#' @return Returns a list containing diff_tool, enrich_tool, and gsva_tool objects
 run_proteomics_pipeline <- function(data_manager,
-                                    # --- 核心模式选择 ---
+                                    # --- Core mode selection ---
                                     analysis_type = c("group", "continuous"),
 
-                                    # --- Group 模式参数 ---
+                                    # --- Group mode parameters ---
                                     condition_col = "condition",
                                     control_group = NULL,
                                     case_group = NULL,
 
-                                    # --- Continuous 模式参数 ---
+                                    # --- Continuous mode parameters ---
                                     continuous_col = NULL,
                                     continuous_method = "spline",
                                     corr_cutoff = 0.5,
                                     r2_cutoff = 0.5,
 
-                                    # --- 通用参数 ---
+                                    # --- General parameters ---
                                     covariates = NULL,
                                     paired_col = NULL,
                                     results_dir = "Results",
@@ -52,12 +52,12 @@ run_proteomics_pipeline <- function(data_manager,
                                     top_n_labels = 10,
                                     use_adj_pval_sig = TRUE,
 
-                                    # --- [新增] 模块控制开关 ---
-                                    run_diff = TRUE,       # 是否跑差异分析
-                                    run_enrichment = TRUE, # 是否跑富集分析
-                                    run_gsva = TRUE,       # 是否跑GSVA分析
+                                    # --- Module control switches ---
+                                    run_diff = TRUE,       # Whether to run differential analysis
+                                    run_enrichment = TRUE, # Whether to run enrichment analysis
+                                    run_gsva = TRUE,       # Whether to run GSVA analysis
 
-                                    # --- GSVA 参数 ---
+                                    # --- GSVA parameters ---
                                     gsva_dbs = c("GOBP", "GOMF", "GOCC", "KEGG", "Wiki", "Reactome"),
                                     gsva_cont_method = "spearman",
                                     gsva_min_size = 10,
@@ -68,16 +68,12 @@ run_proteomics_pipeline <- function(data_manager,
                                     cache_manager = NULL
                                     ) {
 
-  require(here)
-  require(openxlsx)
-  require(readr)
-
-  # 参数校验
+  # Parameter validation
   analysis_type <- match.arg(analysis_type)
 
-  # --- 1. 目录准备与初始化 ---
-  
-  # 自动生成目录名 (即使不跑 diff，也需要知道目录在哪里以加载数据)
+  # --- 1. Directory setup and initialization ---
+
+  # Auto-generate directory name (needed even when skipping diff, to locate data)
   if (is.null(sub_folder_name)) {
     if (analysis_type == "group") {
       if(is.null(control_group) || is.null(case_group)) stop("Group analysis requires 'control_group' and 'case_group'.")
@@ -89,6 +85,9 @@ run_proteomics_pipeline <- function(data_manager,
     }
   }
 
+  # Sanitize sub_folder_name to remove characters that can break directory creation
+  sub_folder_name <- gsub("[^a-zA-Z0-9._-]", "_", sub_folder_name)
+
   subresult_dir <- file.path(results_dir, sub_folder_name)
   enrich_dir <- file.path(subresult_dir, "Enrich_ORA")
   gsea_dir <- file.path(subresult_dir, "Enrich_GSEA")
@@ -96,13 +95,15 @@ run_proteomics_pipeline <- function(data_manager,
   gsva_plots_dir <- file.path(gsva_dir, "Plots")
 
   if (!dir.exists(subresult_dir)) dir.create(subresult_dir, recursive = TRUE)
+  if (!dir.exists(subresult_dir)) stop("Failed to create output directory: ", subresult_dir,
+                                       ". Check that the path does not contain unsupported characters.")
   message(paste("  Output directory:", subresult_dir))
 
-  # 初始化 diff_tool (如果跑 diff 则计算，不跑则尝试加载)
+  # Initialize diff_tool (compute if run_diff, otherwise try loading)
   diff_tool <- DiffExpAnalyst$new(data_manager$imputed_se)
-  sig_proteins <- c() # 初始化为空
+  sig_proteins <- c() # Initialize as empty
 
-  # --- 2. 模块 A: 差异表达分析 (Differential Analysis) ---
+  # --- 2. Module A: Differential Expression Analysis ---
   if (run_diff) {
     message(">>> Starting Module: Differential Analysis <<<")
     
@@ -123,7 +124,7 @@ run_proteomics_pipeline <- function(data_manager,
       )
     }
 
-    # 绘图与保存
+    # Plot and save
     message("  Generating Volcano Plot...")
     pdf(file.path(subresult_dir, "volcano.pdf"), width = 10, height = 8)
     p <- diff_tool$plot_volcano(
@@ -136,7 +137,7 @@ run_proteomics_pipeline <- function(data_manager,
     print(p)
     dev.off()
 
-    # 提取显著列表
+    # Extract significant protein list
     sig_proteins <- diff_tool$get_sig_proteins(
       pval_cutoff = pval_cutoff,
       logfc_cutoff = logfc_cutoff,
@@ -146,7 +147,7 @@ run_proteomics_pipeline <- function(data_manager,
     )
     message(paste0("  Significant proteins found: ", length(sig_proteins)))
 
-    # 保存结果
+    # Save results
     openxlsx::write.xlsx(diff_tool$diff_results, file = file.path(subresult_dir, "Total_Proteins.xlsx"))
     openxlsx::write.xlsx(diff_tool$sig_results, file = file.path(subresult_dir, "Sig_Proteins.xlsx"))
     write_rds(diff_tool, file.path(subresult_dir, "diff_tool.rds"))
@@ -154,14 +155,14 @@ run_proteomics_pipeline <- function(data_manager,
   } else {
     message("--- Skipping Differential Analysis (run_diff = FALSE) ---")
     
-    # 如果不跑 Diff 但要跑 Enrich，必须尝试加载旧结果
+    # If skipping diff but running enrichment, must try loading previous results
     if (run_enrichment) {
       rds_path <- file.path(subresult_dir, "diff_tool.rds")
       if (file.exists(rds_path)) {
         message("  [Auto-Load] Found existing diff_tool.rds, loading for enrichment analysis...")
         diff_tool <- read_rds(rds_path)
         
-        # 重新提取显著蛋白 (确保参数一致)
+        # Re-extract significant proteins (ensure parameter consistency)
         sig_proteins <- diff_tool$get_sig_proteins(
           pval_cutoff = pval_cutoff,
           logfc_cutoff = logfc_cutoff,
@@ -172,12 +173,12 @@ run_proteomics_pipeline <- function(data_manager,
         message(paste0("  Loaded significant proteins: ", length(sig_proteins)))
       } else {
         warning("  [Error] Cannot run Enrichment: 'diff_tool.rds' not found and run_diff is FALSE.")
-        run_enrichment <- FALSE # 强制关闭富集分析
+        run_enrichment <- FALSE # Force-disable enrichment analysis
       }
     }
   }
 
-  # --- 3. 模块 B: 富集分析 (Enrichment) ---
+  # --- 3. Module B: Enrichment Analysis ---
   enrich_tool <- NULL
   
   if (run_enrichment) {
@@ -189,17 +190,55 @@ run_proteomics_pipeline <- function(data_manager,
     if (length(sig_proteins) > 0) {
       enrich_tool <- EnrichmentAnalyst$new(cache_manager)
 
-      # 运行 DiffExpAnalyst 对象分析
+      # Run DiffExpAnalyst object analysis
       enrich_results <- enrich_tool$analyze_diff_obj(diff_tool, pval_cutoff = enrich_pval_cutoff)
 
-      # A. ORA (Up/Down) 导出
+      # A. ORA (Up/Down) export
       enrich_tool$enrich_to_excel(direction = "UP", output_prefix = "Enrich", target_dir = enrich_dir)
       enrich_tool$enrich_to_excel(direction = "DOWN", output_prefix = "Enrich", target_dir = enrich_dir)
 
-      # B. GSEA 导出
+      # B. GSEA export
       enrich_tool$gsea_to_excel(output_prefix = "Enrich_GSEA", target_dir = gsea_dir)
 
-      # 保存 enrich_tool 对象
+      # C. GSEA Plots (dotplot + enrichment curves for top pathways)
+      gsea_plots_dir <- file.path(gsea_dir, "Plots")
+      if (!dir.exists(gsea_plots_dir)) dir.create(gsea_plots_dir, recursive = TRUE)
+
+      for (db in names(enrich_tool$gsea_res)) {
+        res <- enrich_tool$gsea_res[[db]]
+        if (is.null(res) || !inherits(res, "gseaResult") || nrow(res@result) == 0) next
+
+        # Dotplot with activated/suppressed facets
+        tryCatch({
+          p_dot <- enrichplot::dotplot(res, showCategory = 15, split = ".sign",
+                                        label_format = 50, color = "pvalue") +
+            ggplot2::facet_grid(.~.sign) +
+            ggplot2::ggtitle(paste("GSEA:", db))
+          ggplot2::ggsave(plot = p_dot,
+                           filename = file.path(gsea_plots_dir, paste0("GSEA_Dotplot_", db, ".pdf")),
+                           width = 14, height = 8)
+        }, error = function(e) {
+          message("  Error plotting GSEA dotplot for ", db, ": ", e$message)
+        })
+
+        # Enrichment curves for top 5 pathways by NES
+        tryCatch({
+          top_pathways <- head(res@result[order(abs(res@result$NES), decreasing = TRUE), "ID"], 5)
+          for (pw in top_pathways) {
+            safe_name <- gsub("[^a-zA-Z0-9_]", "_", substr(pw, 1, 50))
+            p_curve <- enrichplot::gseaplot2(res, geneSetID = pw, title = pw)
+            ggplot2::ggsave(plot = p_curve,
+                             filename = file.path(gsea_plots_dir,
+                                                 paste0("GSEA_Curve_", db, "_", safe_name, ".pdf")),
+                             width = 10, height = 6)
+          }
+        }, error = function(e) {
+          message("  Error plotting GSEA curves for ", db, ": ", e$message)
+        })
+      }
+      message("  GSEA plots saved.")
+
+      # Save enrich_tool object
       write_rds(enrich_tool, file.path(subresult_dir, "enrich_tool.rds"))
       message("  Enrichment Analysis Completed.")
 
@@ -210,7 +249,7 @@ run_proteomics_pipeline <- function(data_manager,
     message("--- Skipping Enrichment Analysis (run_enrichment = FALSE) ---")
   }
 
-  # --- 4. 模块 C: GSVA Pathway 分析 ---
+  # --- 4. Module C: GSVA Pathway Analysis ---
   gsva_tool <- NULL
 
   if (run_gsva) {
@@ -219,10 +258,10 @@ run_proteomics_pipeline <- function(data_manager,
     if (!dir.exists(gsva_dir)) dir.create(gsva_dir, recursive = TRUE)
     if (!dir.exists(gsva_plots_dir)) dir.create(gsva_plots_dir, recursive = TRUE)
 
-    # 初始化 GSVA 工具
+    # Initialize GSVA tool
     gsva_tool <- ProteomicsGSVA$new(data_manager, cache_manager = cache_manager)
 
-    # 6.1 运行 GSVA (所有指定数据库)
+    # Run GSVA for all specified databases
     message(paste("  Running GSVA for databases:", paste(gsva_dbs, collapse = ", ")))
     gsva_tool$run_gsva(
       dbs = gsva_dbs,
@@ -231,7 +270,7 @@ run_proteomics_pipeline <- function(data_manager,
       save_dir = gsva_dir
     )
 
-    # 6.2 根据分析类型运行差异通路分析
+    # Run differential pathway analysis based on analysis type
     if (analysis_type == "group") {
       message(paste("  Running differential pathway analysis (Group):", case_group, "vs", control_group))
 
@@ -260,7 +299,7 @@ run_proteomics_pipeline <- function(data_manager,
       )
     }
 
-    # 6.3 绘制并保存各数据库的图表
+    # Generate and save plots for each database
     message("  Generating GSVA visualization plots...")
 
     for (db in gsva_dbs) {
@@ -271,9 +310,9 @@ run_proteomics_pipeline <- function(data_manager,
         next
       }
 
-      # A. 火山图
+      # A. Volcano plot
       tryCatch({
-        # 智能阈值：Continuous 模式下不要直接用 LogFC cutoff
+        # Smart threshold: don't use LogFC cutoff directly in continuous mode
         gsva_cor_cutoff <- if(analysis_type == "continuous") 0.3 else logfc_cutoff
         
         p_volcano <- gsva_tool$plot_pathway_volcano(
@@ -289,7 +328,7 @@ run_proteomics_pipeline <- function(data_manager,
         message(paste("  Error plotting volcano for", db, ":", e$message))
       })
 
-      # B. 热图 (Top N 差异通路)
+      # B. Heatmap (Top N differential pathways)
       tryCatch({
         if (!is.null(gsva_tool$diff_pathways[[db]]) && nrow(gsva_tool$diff_pathways[[db]]) > 0) {
           ht_heatmap <- gsva_tool$plot_pathway_heatmap(
@@ -306,7 +345,7 @@ run_proteomics_pipeline <- function(data_manager,
         message(paste("  Error plotting heatmap for", db, ":", e$message))
       })
 
-      # C. GSEA 瀑布图
+      # C. GSEA-style waterfall barplot
       tryCatch({
         p_bar <- gsva_tool$plot_pathway_gsea_bar(
           db = db,
@@ -319,7 +358,7 @@ run_proteomics_pipeline <- function(data_manager,
         message(paste("  Error plotting GSEA bar for", db, ":", e$message))
       })
 
-      # D. 通路相关性热图
+      # D. Pathway correlation heatmap
       tryCatch({
         if (!is.null(gsva_tool$diff_pathways[[db]]) && nrow(gsva_tool$diff_pathways[[db]]) >= 2) {
           ht_corr <- gsva_tool$plot_pathway_correlation(
@@ -335,10 +374,10 @@ run_proteomics_pipeline <- function(data_manager,
       })
     }
 
-    # 6.4 保存所有差异通路汇总
+    # Save all differential pathway summary
     gsva_tool$save_all_diff_results(file.path(gsva_dir, "All_DiffPathways_Summary.xlsx"))
 
-    # 保存 gsva_tool 对象
+    # Save gsva_tool object
     write_rds(gsva_tool, file.path(subresult_dir, "gsva_tool.rds"))
     message("  GSVA Analysis Completed.")
     
