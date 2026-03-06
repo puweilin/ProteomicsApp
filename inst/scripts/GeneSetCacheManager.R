@@ -15,9 +15,7 @@
 # after the initial build.
 # =============================================================================
 
-library(R6)
-
-GeneSetCacheManager <- R6Class("GeneSetCacheManager",
+GeneSetCacheManager <- R6::R6Class("GeneSetCacheManager",
   public = list(
     cache_dir = NULL,
     cache_metadata = NULL,

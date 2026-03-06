@@ -1,33 +1,22 @@
 # =============================================================================
-# ProteomicsGSVA: 蛋白组学GSVA分析类
+# ProteomicsGSVA: Proteomics GSVA analysis class
+# =============================================================================
+# Note: All packages are loaded via app.R setup_environment().
 # =============================================================================
 
-library(R6)
-library(tidyverse)
-library(GSVA)
-library(limma)
-library(openxlsx)
-library(ggrepel)
-library(ggplot2)
-library(ComplexHeatmap)
-library(circlize)
-library(ggpubr)
-library(reshape2)
-library(msigdbr)
-
-ProteomicsGSVA <- R6Class("ProteomicsGSVA",
+ProteomicsGSVA <- R6::R6Class("ProteomicsGSVA",
   public = list(
-    # --- 核心数据存储 ---
-    data_manager = NULL,          # ProteomicsDataManager对象
-    cache_manager = NULL,         # GeneSetCacheManager对象
-    gsva_matrices = NULL,         # GSVA打分矩阵列表 (每个DB一个matrix)
-    gsva_results = NULL,          # 差异分析结果列表 (每个DB一个data.frame)
-    diff_pathways = NULL,         # 显著差异通路列表 (每个DB一个data.frame)
-    pathway_genesets = NULL,      # 基因集列表 (每个DB一个list)
+    # --- Core data storage ---
+    data_manager = NULL,          # ProteomicsDataManager object
+    cache_manager = NULL,         # GeneSetCacheManager object
+    gsva_matrices = NULL,         # GSVA score matrices (one matrix per DB)
+    gsva_results = NULL,          # Differential analysis results (one data.frame per DB)
+    diff_pathways = NULL,         # Significant differential pathways (one data.frame per DB)
+    pathway_genesets = NULL,      # Gene set list (one list per DB)
+    gsva_cache_dir = NULL,        # Directory for hash-based GSVA result caching
 
-    # --- 初始化 ---
+    # --- Initialize ---
     initialize = function(data_manager, organism = "hsa", cache_manager = NULL) {
-      # 检查 data_manager 是否为 R6 类 (简单的 check)
       if (!"ProteomicsDataManager" %in% class(data_manager)) {
         stop("data_manager must be a ProteomicsDataManager object")
       }
@@ -38,10 +27,19 @@ ProteomicsGSVA <- R6Class("ProteomicsGSVA",
       self$diff_pathways <- list()
       self$pathway_genesets <- list()
       private$organism <- organism
+
+      # Initialize GSVA result cache directory
+      self$gsva_cache_dir <- file.path(
+        tools::R_user_dir("ProteomicsApp", "cache"), "gsva_cache"
+      )
+      if (!dir.exists(self$gsva_cache_dir)) {
+        dir.create(self$gsva_cache_dir, recursive = TRUE)
+      }
+
       message("ProteomicsGSVA initialized successfully.")
     },
 
-# --- 功能1: 构建单个数据库的基因集 (prefer cache, fallback to online) ---
+# --- Feature 1: Build gene sets for a single database (prefer cache, fallback to online) ---
     prepare_geneset = function(db = "GOBP", min_size = 10, max_size = 500) {
       message(paste("--- Preparing gene sets for:", db, "---"))
       gs_list <- list()
@@ -131,8 +129,13 @@ ProteomicsGSVA <- R6Class("ProteomicsGSVA",
           }
         }
 
-        # Post-processing: deduplicate and filter by size
+        # Post-processing: filter to expressed genes, deduplicate and filter by size
         if (length(gs_list) > 0) {
+          # Filter gene sets to genes present in expression matrix
+          if (!is.null(self$data_manager$imputed_se)) {
+            expressed_genes <- rownames(SummarizedExperiment::assay(self$data_manager$imputed_se))
+            gs_list <- lapply(gs_list, function(genes) intersect(genes, expressed_genes))
+          }
           gs_list <- lapply(gs_list, unique)
           lens <- lengths(gs_list)
           gs_list <- gs_list[lens >= min_size & lens <= max_size]
@@ -149,35 +152,37 @@ ProteomicsGSVA <- R6Class("ProteomicsGSVA",
       return(gs_list)
     },
 
-    # --- 功能2: 运行GSVA分析 (适配 GSVA >= 1.52 新版 API) ---
+    # --- Run GSVA analysis (adapted for GSVA >= 1.52 new API) ---
     run_gsva = function(dbs = c("GOBP", "GOMF", "GOCC", "KEGG", "Wiki", "Reactome"),
                          min_size = 10, max_size = 500,
                          kcdf = "Gaussian", method = "gsva",
                          parallel_threads = 4,
+                         parallel_dbs = FALSE,
+                         use_cache = TRUE,
                          save_dir = NULL) {
       message("--- Running GSVA Analysis (Per Database) ---")
-      
-      # 引入 BiocParallel 以支持并行
+
+      # Import BiocParallel for parallel support
       if (!requireNamespace("BiocParallel", quietly = TRUE)) {
         stop("Package 'BiocParallel' is required for the new GSVA version.")
       }
 
-      # 检查数据
+      # Check data
       if (is.null(self$data_manager$imputed_se)) {
         stop("Please run perform_imputation() on data_manager first.")
       }
 
-      # 获取表达矩阵
-      expr_mat <- assay(self$data_manager$imputed_se)
+      # Get expression matrix
+      expr_mat <- SummarizedExperiment::assay(self$data_manager$imputed_se)
       message(paste("  Expression matrix dimensions:", nrow(expr_mat), "x", ncol(expr_mat)))
 
-      # 如果指定了保存目录，检查并创建
+      # Create save directory if specified
       if (!is.null(save_dir) && !dir.exists(save_dir)) {
         dir.create(save_dir, recursive = TRUE)
       }
 
-      # --- 设置并行后端 (适配新版 GSVA 的 BPPARAM) ---
-      if (parallel_threads > 1) {
+      # --- Set up parallel backend (for within-GSVA parallelism) ---
+      if (!parallel_dbs && parallel_threads > 1) {
         if (.Platform$OS.type == "windows") {
           bpparam <- BiocParallel::SnowParam(workers = parallel_threads, progressbar = TRUE)
         } else {
@@ -188,90 +193,127 @@ ProteomicsGSVA <- R6Class("ProteomicsGSVA",
         bpparam <- BiocParallel::SerialParam()
       }
 
-      # 遍历每个数据库，独立运行GSVA
+      # Prepare all gene sets first
       for (db in dbs) {
-        message(paste("\n========== Processing:", db, "=========="))
-
-        # 准备基因集
         if (is.null(self$pathway_genesets[[db]])) {
-           gs_list <- self$prepare_geneset(db = db, min_size = min_size, max_size = max_size)
-           self$pathway_genesets[[db]] <- gs_list
+          gs_list <- self$prepare_geneset(db = db, min_size = min_size, max_size = max_size)
+          self$pathway_genesets[[db]] <- gs_list
+        }
+      }
+
+      # Function to run GSVA for a single database (with caching)
+      run_single_gsva <- function(db, bpparam_inner) {
+        gs_list <- self$pathway_genesets[[db]]
+        if (is.null(gs_list) || length(gs_list) == 0) return(NULL)
+
+        # Check cache
+        if (use_cache && !is.null(self$gsva_cache_dir)) {
+          cache_key <- digest::digest(list(
+            expr_hash = digest::digest(expr_mat),
+            gs_hash   = digest::digest(gs_list),
+            method    = method,
+            kcdf      = kcdf,
+            min_size  = min_size,
+            max_size  = max_size
+          ))
+          cache_file <- file.path(self$gsva_cache_dir, paste0("gsva_", db, "_", cache_key, ".rds"))
+
+          if (file.exists(cache_file)) {
+            message(paste("  [Cache Hit] Loading cached GSVA result for", db))
+            return(readRDS(cache_file))
+          }
         } else {
-           message("  Using cached gene sets.")
-           gs_list <- self$pathway_genesets[[db]]
+          cache_file <- NULL
         }
 
-        if (length(gs_list) == 0) {
-          warning(paste("  No gene sets available for", db, "- Skipping"))
-          next
-        }
-
-        # 运行GSVA (新版 API)
+        # Run GSVA
         message(paste("  Running GSVA for", db, "using method:", method, "..."))
-        
         tryCatch({
-            param_obj <- NULL
-            
-            # --- 1. 构建参数对象 (GSVA >= 1.52 核心变更) ---
-            if (method == "gsva") {
-              param_obj <- gsvaParam(
-                exprData = expr_mat,
-                geneSets = gs_list,
-                minSize = min_size,
-                maxSize = max_size,
-                kcdf = kcdf,
-                maxDiff = TRUE 
-              )
-            } else if (method == "ssgsea") {
-              param_obj <- ssgseaParam(
-                exprData = expr_mat,
-                geneSets = gs_list,
-                minSize = min_size,
-                maxSize = max_size
-              )
-            } else if (method == "zscore") {
-              param_obj <- zscoreParam(
-                exprData = expr_mat,
-                geneSets = gs_list,
-                minSize = min_size,
-                maxSize = max_size
-              )
-            } else if (method == "plage") {
-              param_obj <- plageParam(
-                exprData = expr_mat,
-                geneSets = gs_list,
-                minSize = min_size,
-                maxSize = max_size
-              )
-            } else {
-              stop(paste("Method", method, "not supported directly in this wrapper."))
-            }
+          param_obj <- NULL
+          if (method == "gsva") {
+            param_obj <- GSVA::gsvaParam(exprData = expr_mat, geneSets = gs_list,
+                                          minSize = min_size, maxSize = max_size,
+                                          kcdf = kcdf, maxDiff = TRUE)
+          } else if (method == "ssgsea") {
+            param_obj <- GSVA::ssgseaParam(exprData = expr_mat, geneSets = gs_list,
+                                            minSize = min_size, maxSize = max_size)
+          } else if (method == "zscore") {
+            param_obj <- GSVA::zscoreParam(exprData = expr_mat, geneSets = gs_list,
+                                            minSize = min_size, maxSize = max_size)
+          } else if (method == "plage") {
+            param_obj <- GSVA::plageParam(exprData = expr_mat, geneSets = gs_list,
+                                           minSize = min_size, maxSize = max_size)
+          } else {
+            stop(paste("Method", method, "not supported."))
+          }
 
-            # --- 2. 调用 gsva() ---
-            gsva_result <- gsva(param_obj, verbose = FALSE, BPPARAM = bpparam)
-            
-            # 保存结果
-            self$gsva_matrices[[db]] <- gsva_result
-            message(paste("  GSVA matrix dimensions:", nrow(gsva_result), "x", ncol(gsva_result)))
-    
-            # 保存到Excel文件
+          gsva_result <- GSVA::gsva(param_obj, verbose = FALSE, BPPARAM = bpparam_inner)
+
+          # Save to cache
+          if (use_cache && !is.null(cache_file)) {
+            saveRDS(gsva_result, cache_file)
+            message(paste("  [Cache Save] Saved GSVA result for", db))
+          }
+
+          gsva_result
+        }, error = function(e) {
+          message(paste("  GSVA execution failed for", db, ":", e$message))
+          NULL
+        })
+      }
+
+      # Execute: parallel across DBs or sequential
+      if (parallel_dbs && length(dbs) > 1) {
+        message("  Running GSVA in parallel across databases...")
+        inner_bpparam <- BiocParallel::SerialParam()
+
+        if (.Platform$OS.type == "windows") {
+          # Windows cannot use mclapply; use sequential as safe fallback
+          message("  (Windows detected: falling back to sequential for DB-level parallelism)")
+          for (db in dbs) {
+            result <- run_single_gsva(db, inner_bpparam)
+            if (!is.null(result)) {
+              self$gsva_matrices[[db]] <- result
+              message(paste("  GSVA matrix dimensions:", nrow(result), "x", ncol(result)))
+            }
+          }
+        } else {
+          results <- parallel::mclapply(dbs, function(db) {
+            run_single_gsva(db, inner_bpparam)
+          }, mc.cores = min(parallel_threads, length(dbs)))
+          names(results) <- dbs
+          for (db in dbs) {
+            if (!is.null(results[[db]])) {
+              self$gsva_matrices[[db]] <- results[[db]]
+              message(paste("  GSVA matrix for", db, ":", nrow(results[[db]]), "x", ncol(results[[db]])))
+            }
+          }
+        }
+      } else {
+        # Sequential execution with within-GSVA parallelism
+        for (db in dbs) {
+          result <- run_single_gsva(db, bpparam)
+          if (!is.null(result)) {
+            self$gsva_matrices[[db]] <- result
+            message(paste("  GSVA matrix dimensions:", nrow(result), "x", ncol(result)))
+
+            # Save to Excel
             if (!is.null(save_dir)) {
               output_file <- file.path(save_dir, paste0("GSVA_", db, "_scores.xlsx"))
-              write.xlsx(as.data.frame(gsva_result) %>% rownames_to_column("Pathway"),
-                         file = output_file, overwrite = TRUE)
+              openxlsx::write.xlsx(
+                as.data.frame(result) %>% tibble::rownames_to_column("Pathway"),
+                file = output_file, overwrite = TRUE)
               message(paste("  Saved to:", output_file))
             }
-        }, error = function(e) {
-            message(paste("  GSVA execution failed for", db, ":", e$message))
-            message("  Debugging: Ensure you have BiocParallel installed and GSVA version >= 1.52")
-        })
+          }
+        }
       }
 
       message("\n--- All GSVA analyses completed ---")
       return(self$gsva_matrices)
     },
 
-    # --- 功能3: 差异通路分析 (按数据库独立分析) ---
+    # --- Feature 3: Differential pathway analysis (per database) ---
     run_pathway_diff_analysis = function(dbs = NULL, group_col, control_group, case_group,
                                           covariates = NULL,
                                           pval_cutoff = 0.05, fc_cutoff = 0.5,
@@ -309,7 +351,7 @@ ProteomicsGSVA <- R6Class("ProteomicsGSVA",
           next
         }
 
-        # 验证协变量
+        # Validate covariates
         if (!is.null(covariates)) {
           missing_cov <- setdiff(covariates, colnames(meta))
           if (length(missing_cov) > 0) {
@@ -319,7 +361,7 @@ ProteomicsGSVA <- R6Class("ProteomicsGSVA",
           if (length(covariates) == 0) covariates <- NULL
         }
 
-        # 样本匹配逻辑 (Use Rownames)
+        # Sample matching logic (Use Rownames)
         target_meta <- meta %>%
           filter(!!sym(group_col) %in% c(control_group, case_group))
         target_samples <- rownames(target_meta) 
@@ -336,7 +378,7 @@ ProteomicsGSVA <- R6Class("ProteomicsGSVA",
 
         gsva_subset <- gsva_mat[, valid_samples, drop = FALSE]
 
-        # 构建 Design Matrix
+        # Build design matrix
         design_df <- meta[valid_samples, ] %>%
           mutate(Group = factor(!!sym(group_col), levels = c(control_group, case_group)))
         
@@ -412,7 +454,7 @@ ProteomicsGSVA <- R6Class("ProteomicsGSVA",
       return(all_results)
     },
 
-    # 3b: 连续变量分析
+    # 3b: Continuous variable analysis
     run_pathway_continuous_analysis = function(dbs = NULL, continuous_col,
                                                 method = "spearman",
                                                 covariates = NULL,
@@ -547,49 +589,31 @@ ProteomicsGSVA <- R6Class("ProteomicsGSVA",
       return(all_results)
     },
 
-    # --- 辅助功能: 保存单个DB的差异结果到Excel [美化版] ---
+    # --- Utility: Save single DB differential results to Excel (formatted) ---
     save_diff_db_to_excel = function(res_table, sig_pathways, output_file, db_name) {
       wb <- createWorkbook()
       
-      # --- [新增] 名称美化函数: 去除前缀 + Title Case ---
-      clean_df <- function(d) {
-        if("Pathway" %in% colnames(d)) {
-          d$Pathway_ID <- d$Pathway # 保留原始ID
-          # 1. Remove Prefix (up to first underscore)
-          clean <- gsub("^[^_]+_", "", d$Pathway)
-          # 2. Underscore to Space
-          clean <- gsub("_", " ", clean)
-          # 3. Title Case
-          d$Pathway <- stringr::str_to_title(clean)
-          
-          # 把 Pathway 挪到第一列
-          d <- d %>% dplyr::select(Pathway, Pathway_ID, everything())
-        }
-        return(d)
-      }
-      # ------------------------
-      
       addWorksheet(wb, paste0(db_name, "_Summary"))
-      writeData(wb, paste0(db_name, "_Summary"), clean_df(res_table))
+      writeData(wb, paste0(db_name, "_Summary"), private$clean_pathway_df(res_table))
 
       sig_up <- sig_pathways %>% filter(Diff_Status == "Up-regulated")
       sig_down <- sig_pathways %>% filter(Diff_Status == "Down-regulated")
 
       if (nrow(sig_up) > 0) {
         addWorksheet(wb, paste0(db_name, "_Up"))
-        writeData(wb, paste0(db_name, "_Up"), clean_df(sig_up))
+        writeData(wb, paste0(db_name, "_Up"), private$clean_pathway_df(sig_up))
       }
 
       if (nrow(sig_down) > 0) {
         addWorksheet(wb, paste0(db_name, "_Down"))
-        writeData(wb, paste0(db_name, "_Down"), clean_df(sig_down))
+        writeData(wb, paste0(db_name, "_Down"), private$clean_pathway_df(sig_down))
       }
 
       saveWorkbook(wb, output_file, overwrite = TRUE)
       message(paste("  Saved:", output_file))
     },
 
-    # --- 功能4: 绘制通路火山图 (指定数据库) [美化版] ---
+    # --- Feature 4: Plot pathway volcano (per database, formatted) ---
     plot_pathway_volcano = function(db = "GOBP", pval_cutoff = 0.05, fc_cutoff = 0,
                                      top_n = 15, adjusted = TRUE) {
       message(paste("--- Plotting Pathway Volcano Plot:", db, "---"))
@@ -599,14 +623,9 @@ ProteomicsGSVA <- R6Class("ProteomicsGSVA",
       }
 
       df <- self$gsva_results[[db]]
-      
-      # --- [新增] 名称美化: 去除前缀 + Title Case ---
-      clean_temp <- gsub("^[^_]+_", "", df$Pathway) # Remove Prefix
-      clean_temp <- gsub("_", " ", clean_temp)      # Underscore to Space
-      df$Clean_Pathway <- stringr::str_to_title(clean_temp) # Title Case
-      # ---------------------
 
-      # 准备绘图数据
+      # Clean pathway names
+      df$Clean_Pathway <- private$clean_pathway_names(df$Pathway)
       if ("adj.P.Val" %in% colnames(df)) {
         p_col <- if (adjusted) "adj.P.Val" else "P.Value"
         p_lab <- if (adjusted) "Adjusted P-value" else "P-value"
@@ -639,20 +658,19 @@ ProteomicsGSVA <- R6Class("ProteomicsGSVA",
         x_col <- "Correlation"
       }
 
-      # 选择top N标签
+      # Select top N labels
       top_up <- df %>% filter(expression %in% c("Up-regulated", "Positive")) %>% arrange(desc(log_pval)) %>% slice_head(n = top_n)
       top_down <- df %>% filter(expression %in% c("Down-regulated", "Negative")) %>% arrange(desc(log_pval)) %>% slice_head(n = top_n)
       top_labels <- bind_rows(top_up, top_down) %>% distinct()
 
-      # 绘图
-      p <- ggplot(df, aes(x = !!sym(x_col), y = log_pval)) +
+      # Plot      p <- ggplot(df, aes(x = !!sym(x_col), y = log_pval)) +
         geom_point(aes(color = expression), alpha = 0.6, size = 2) +
         scale_color_manual(values = c("Up-regulated" = "#B31B21", "Down-regulated" = "#1465AC",
                                        "Not Significant" = "grey80", "Positive" = "#B31B21", "Negative" = "#1465AC")) +
         geom_hline(yintercept = -log10(pval_cutoff), linetype = "dashed", color = "black", alpha = 0.5) +
         geom_vline(xintercept = c(-fc_cutoff, fc_cutoff), linetype = "dashed", color = "black", alpha = 0.5) +
         
-        # [修改] 使用 Clean_Pathway 作为标签
+        # [Modified] Use Clean_Pathway as label
         geom_text_repel(data = top_labels, aes(label = Clean_Pathway), size = 3,
                         box.padding = 0.3, max.overlaps = Inf) +
                         
@@ -667,7 +685,7 @@ ProteomicsGSVA <- R6Class("ProteomicsGSVA",
       return(p)
     },
 
-    # --- 功能5: 绘制差异通路热图 (指定数据库) [美化版] ---
+    # --- Feature 5: Plot differential pathway heatmap (per database, formatted) ---
     plot_pathway_heatmap = function(db = "GOBP", top_n = 30, pathways = NULL,
                                      group_col = "condition", 
                                      show_sample_annot = TRUE,
@@ -678,7 +696,7 @@ ProteomicsGSVA <- R6Class("ProteomicsGSVA",
         stop(paste("No GSVA matrix for", db))
       }
 
-      # 选择通路
+      # Select pathways
       if (!is.null(pathways)) {
         selected_pathways <- intersect(pathways, rownames(self$gsva_matrices[[db]]))
         if (length(selected_pathways) == 0) {
@@ -696,24 +714,15 @@ ProteomicsGSVA <- R6Class("ProteomicsGSVA",
         selected_pathways <- rownames(self$gsva_matrices[[db]])[1:top_n]
       }
 
-      # 提取子矩阵
+      # Extract submatrix
       mat <- self$gsva_matrices[[db]][selected_pathways, , drop = FALSE]
 
-      # --- [新增] 名称美化步骤 ---
-      # 1. Remove Prefix
-      clean_names <- gsub("^[^_]+_", "", rownames(mat))
-      # 2. Underscore to Space
-      clean_names <- gsub("_", " ", clean_names)
-      # 3. Title Case
-      clean_names <- stringr::str_to_title(clean_names)
-      
-      # 替换矩阵行名
-      rownames(mat) <- clean_names
-      # ---------------------------
+      # Clean pathway names
+      rownames(mat) <- private$clean_pathway_names(rownames(mat))
 
       mat_scaled <- t(scale(t(mat)))
 
-      # 样本注释
+      # Sample annotation
       ha <- NULL
       if (show_sample_annot) {
         meta <- self$data_manager$meta_data
@@ -721,7 +730,7 @@ ProteomicsGSVA <- R6Class("ProteomicsGSVA",
         if (group_col %in% colnames(meta)) {
           sample_names <- colnames(self$gsva_matrices[[db]]) 
           
-          # 优先匹配 rownames
+          # Prefer rownames matching
           if(all(sample_names %in% rownames(meta))) {
              annot_vals <- meta[sample_names, group_col]
           } else {
@@ -737,7 +746,7 @@ ProteomicsGSVA <- R6Class("ProteomicsGSVA",
           annot_df <- data.frame(Group = annot_vals)
           colnames(annot_df) <- group_col
 
-          # 对 groups 排序以确保颜色分配一致
+          # Sort groups for consistent color assignment
           groups <- sort(unique(as.character(annot_vals)))
           if(length(groups) <= 10) {
              colors <- ggsci::pal_npg()(length(groups))
@@ -757,7 +766,7 @@ ProteomicsGSVA <- R6Class("ProteomicsGSVA",
         }
       }
 
-      # 绘制热图
+      # Draw heatmap
       ht <- Heatmap(
         mat_scaled,
         name = "Z-score",
@@ -775,7 +784,7 @@ ProteomicsGSVA <- R6Class("ProteomicsGSVA",
       return(ht)
     },
 
-    # --- 功能6: GSEA样式瀑布图 (Barplot, 指定数据库) [美化版] ---
+    # --- Feature 6: GSEA-style waterfall barplot (per database, formatted) ---
     plot_pathway_gsea_bar = function(db = "GOBP", top_n = 20, sort_by = "logFC") {
       message(paste("--- Plotting GSEA-style Bar Plot:", db, "---"))
 
@@ -793,18 +802,15 @@ ProteomicsGSVA <- R6Class("ProteomicsGSVA",
          }
       }
       
-      # --- [新增] 名称美化: 去除前缀 + Title Case ---
-      clean_temp <- gsub("^[^_]+_", "", df$Pathway) # Remove Prefix
-      clean_temp <- gsub("_", " ", clean_temp)      # Underscore to Space
-      df$Clean_Pathway <- stringr::str_to_title(clean_temp)
-      # ---------------------
+      # Clean pathway names
+      df$Clean_Pathway <- private$clean_pathway_names(df$Pathway)
 
       df <- df %>%
         arrange(desc(abs(!!sym(sort_by)))) %>%
         slice_head(n = top_n) %>%
         mutate(Direction = ifelse(!!sym(sort_by) > 0, "Up/Pos", "Down/Neg"))
 
-      # 绘图 [修改] x轴使用 Clean_Pathway
+      # Plot [Modified] x-axis uses Clean_Pathway
       p <- ggplot(df, aes(x = reorder(Clean_Pathway, !!sym(sort_by)), y = !!sym(sort_by), fill = Direction)) +
         geom_bar(stat = "identity", width = 0.7) +
         coord_flip() +
@@ -822,13 +828,13 @@ ProteomicsGSVA <- R6Class("ProteomicsGSVA",
       return(p)
     },
 
-    # --- 功能7-11: 保持原样 ---
-    # ... (此处省略未改动的辅助绘图函数 plot_pathway_group_comparison 等，如需使用请确保之前的类中包含)
-    # 为保证完整性，以下补全剩余未改动函数
+    # --- Features 7-11: Unchanged ---
+    # ... (Remaining utility plotting functions like plot_pathway_group_comparison are retained as-is)
+    # Included below for completeness
 
     plot_pathway_group_comparison = function(db, pathway_name, group_col,
                                               colors = NULL, add_stats = TRUE) {
-      # ... (代码与之前相同，略)
+      # ... (code same as before, omitted)
       message(paste("Plotting group comparison for:", pathway_name, "(", db, ")"))
 
       if (is.null(self$gsva_matrices[[db]])) {
@@ -884,7 +890,7 @@ ProteomicsGSVA <- R6Class("ProteomicsGSVA",
 
     plot_pathway_trend = function(db, pathway_name, continuous_col,
                                    add_ci = TRUE, color = "#1465AC") {
-      # ... (代码与之前相同)
+      # ... (code same as before)
       message(paste("Plotting trend for:", pathway_name, "(", db, ")"))
 
       if (is.null(self$gsva_matrices[[db]])) {
@@ -992,17 +998,6 @@ ProteomicsGSVA <- R6Class("ProteomicsGSVA",
 
     save_all_diff_results = function(output_file) {
       wb <- createWorkbook()
-      # Helper (copied for self-containment)
-      clean_df <- function(d) {
-        if("Pathway" %in% colnames(d)) {
-          d$Pathway_ID <- d$Pathway
-          clean <- gsub("^[^_]+_", "", d$Pathway) # Remove Prefix
-          clean <- gsub("_", " ", clean)
-          d$Pathway <- stringr::str_to_title(clean)
-          d <- d %>% dplyr::select(Pathway, Pathway_ID, everything())
-        }
-        return(d)
-      }
 
       for (db in names(self$gsva_results)) {
         if (!is.null(self$gsva_results[[db]])) {
@@ -1010,18 +1005,18 @@ ProteomicsGSVA <- R6Class("ProteomicsGSVA",
           safe_name <- gsub("[^a-zA-Z0-9]", "_", db)
 
           addWorksheet(wb, paste0(safe_name, "_Summary"))
-          writeData(wb, paste0(safe_name, "_Summary"), clean_df(res))
+          writeData(wb, paste0(safe_name, "_Summary"), private$clean_pathway_df(res))
 
           sig_up <- res %>% filter(Diff_Status == "Up-regulated")
           sig_down <- res %>% filter(Diff_Status == "Down-regulated")
 
           if (nrow(sig_up) > 0) {
             addWorksheet(wb, paste0(safe_name, "_Up"))
-            writeData(wb, paste0(safe_name, "_Up"), clean_df(sig_up))
+            writeData(wb, paste0(safe_name, "_Up"), private$clean_pathway_df(sig_up))
           }
           if (nrow(sig_down) > 0) {
             addWorksheet(wb, paste0(safe_name, "_Down"))
-            writeData(wb, paste0(safe_name, "_Down"), clean_df(sig_down))
+            writeData(wb, paste0(safe_name, "_Down"), private$clean_pathway_df(sig_down))
           }
         }
       }
@@ -1041,10 +1036,36 @@ ProteomicsGSVA <- R6Class("ProteomicsGSVA",
         stop(paste("No differential results for", db))
       }
       return(self$gsva_results[[db]])
+    },
+
+    # Clear the GSVA result cache
+    clear_gsva_cache = function() {
+      if (!is.null(self$gsva_cache_dir) && dir.exists(self$gsva_cache_dir)) {
+        files <- list.files(self$gsva_cache_dir, full.names = TRUE)
+        file.remove(files)
+        message("GSVA cache cleared: removed ", length(files), " cached files.")
+      }
     }
   ),
 
   private = list(
-    organism = "hsa"
+    organism = "hsa",
+
+    # Shared pathway name cleaning: remove prefix, underscore to space, title case
+    clean_pathway_names = function(names_vec) {
+      cleaned <- gsub("^[^_]+_", "", names_vec)
+      cleaned <- gsub("_", " ", cleaned)
+      cleaned <- stringr::str_to_title(cleaned)
+      cleaned
+    },
+
+    # Clean a data.frame's Pathway column (used in Excel export)
+    clean_pathway_df = function(df) {
+      if (!"Pathway" %in% colnames(df)) return(df)
+      df$Pathway_ID <- df$Pathway
+      df$Pathway <- private$clean_pathway_names(df$Pathway)
+      df <- df %>% dplyr::select(Pathway, Pathway_ID, dplyr::everything())
+      df
+    }
   )
 )

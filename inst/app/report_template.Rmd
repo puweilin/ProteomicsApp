@@ -1,0 +1,100 @@
+---
+title: "Proteomics Analysis Report"
+date: "`r format(Sys.time(), '%Y-%m-%d %H:%M')`"
+output:
+  pdf_document:
+    toc: true
+    toc_depth: 2
+params:
+  diff_tool: NULL
+  enrich_tool: NULL
+  gsva_tool: NULL
+  analysis_params: ""
+  analysis_mode: "group"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE,
+                      fig.width = 10, fig.height = 7)
+library(ggplot2)
+library(enrichplot)
+library(ComplexHeatmap)
+```
+
+## Analysis Parameters
+
+```{r params}
+cat(gsub("<br>", "\n", params$analysis_params))
+```
+
+## Differential Expression
+
+### Volcano Plot
+
+```{r volcano, fig.height=8}
+if (!is.null(params$diff_tool)) {
+  if (params$analysis_mode == "group") {
+    params$diff_tool$plot_volcano(logfc_cutoff = 0.263, pval_cutoff = 0.05)
+  } else if (params$analysis_mode == "continuous") {
+    params$diff_tool$plot_volcano(corr_cutoff = 0.5, r2_cutoff = 0.5, pval_cutoff = 0.05)
+  }
+}
+```
+
+### Summary Statistics
+
+```{r summary}
+if (!is.null(params$diff_tool) && !is.null(params$diff_tool$diff_results)) {
+  df <- params$diff_tool$diff_results
+  cat("Total proteins analyzed:", nrow(df), "\n")
+  if (!is.null(params$diff_tool$sig_results)) {
+    cat("Significant proteins:", nrow(params$diff_tool$sig_results), "\n")
+  }
+}
+```
+
+## Enrichment Analysis (ORA)
+
+```{r ora, fig.height=6}
+if (!is.null(params$enrich_tool)) {
+  for (db in c("GO_BP", "KEGG")) {
+    if (!is.null(params$enrich_tool$ora_up[[db]]) &&
+        nrow(as.data.frame(params$enrich_tool$ora_up[[db]])) > 0) {
+      cat("\n###", db, "(Up-regulated)\n\n")
+      print(enrichplot::dotplot(params$enrich_tool$ora_up[[db]], showCategory = 15))
+    }
+  }
+}
+```
+
+## GSEA
+
+```{r gsea, fig.height=6}
+if (!is.null(params$enrich_tool) && !is.null(params$enrich_tool$gsea_res)) {
+  for (db in c("GO_BP", "KEGG")) {
+    res <- params$enrich_tool$gsea_res[[db]]
+    if (!is.null(res) && inherits(res, "gseaResult") && nrow(res@result) > 0) {
+      cat("\n###", db, "\n\n")
+      print(enrichplot::dotplot(res, showCategory = 15, split = ".sign",
+                                label_format = 50) +
+            ggplot2::facet_grid(. ~ .sign) +
+            ggplot2::ggtitle(paste("GSEA:", db)))
+    }
+  }
+}
+```
+
+## GSVA Pathway Analysis
+
+```{r gsva_volcano, fig.height=7}
+if (!is.null(params$gsva_tool)) {
+  for (db in names(params$gsva_tool$gsva_results)) {
+    if (!is.null(params$gsva_tool$gsva_results[[db]])) {
+      tryCatch({
+        print(params$gsva_tool$plot_pathway_volcano(db = db, top_n = 10))
+      }, error = function(e) NULL)
+      break
+    }
+  }
+}
+```
